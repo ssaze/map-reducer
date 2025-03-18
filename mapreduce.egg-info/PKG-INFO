@@ -1,0 +1,14 @@
+Metadata-Version: 2.2
+Name: mapreduce
+Version: 1.0.0
+Summary: EECS 485 MapReduce
+Requires-Python: >=3.12
+Requires-Dist: bs4
+Requires-Dist: click
+Requires-Dist: pycodestyle
+Requires-Dist: pydocstyle
+Requires-Dist: pylint
+Requires-Dist: markdown
+Requires-Dist: mypy
+Requires-Dist: pytest
+Requires-Dist: pytest-mock

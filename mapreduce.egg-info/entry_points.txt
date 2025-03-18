@@ -1,0 +1,4 @@
+[console_scripts]
+mapreduce-manager = mapreduce.manager.__main__:main
+mapreduce-submit = mapreduce.submit:main
+mapreduce-worker = mapreduce.worker.__main__:main
