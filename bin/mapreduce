@@ -1,0 +1,75 @@
+#!/bin/bash
+
+LOG_DIR="var/log"
+MANAGER_LOG="$LOG_DIR/manager.log"
+WORKER1_LOG="$LOG_DIR/worker-6001.log"
+WORKER2_LOG="$LOG_DIR/worker-6002.log"
+
+start_server() {
+    if pgrep -f mapreduce-manager > /dev/null || pgrep -f mapreduce-worker > /dev/null; then
+        echo "Error: mapreduce-manager is already running"
+        exit 1
+    fi
+
+    echo "starting mapreduce ..."
+    mkdir -p "$LOG_DIR"
+    rm -f "$MANAGER_LOG" "$WORKER1_LOG" "$WORKER2_LOG"
+
+    mapreduce-manager --host localhost --port 6000 --logfile "$MANAGER_LOG" &
+    sleep 2  # allow manager to start
+    mapreduce-worker --host localhost --port 6001 --manager-host localhost --manager-port 6000 --logfile "$WORKER1_LOG" &
+    mapreduce-worker --host localhost --port 6002 --manager-host localhost --manager-port 6000 --logfile "$WORKER2_LOG" &
+}
+
+stop_server() {
+    echo "stopping mapreduce ..."
+    mapreduce-submit --shutdown --host localhost --port 6000 || true
+    sleep 2
+
+    if pgrep -f mapreduce-manager > /dev/null; then
+        echo "killing mapreduce manager ..."
+        pkill -f mapreduce-manager || true
+    fi
+
+    if pgrep -f mapreduce-worker > /dev/null; then
+        echo "killing mapreduce worker ..."
+        pkill -f mapreduce-worker || true
+    fi
+}
+
+status_server() {
+    if pgrep -f mapreduce-manager > /dev/null; then
+        echo "manager running"
+    else
+        echo "manager not running"
+    fi
+
+    if pgrep -f mapreduce-worker > /dev/null; then
+        echo "workers running"
+    else
+        echo "workers not running"
+    fi
+
+    # Exit 0 only if both manager and worker(s) are running
+    if pgrep -f mapreduce-manager > /dev/null && pgrep -f mapreduce-worker > /dev/null; then
+        exit 0
+    else
+        exit 1
+    fi
+}
+
+restart_server() {
+    stop_server
+    start_server
+}
+
+case "$1" in
+    start) start_server ;;
+    stop) stop_server ;;
+    status) status_server ;;
+    restart) restart_server ;;
+    *)
+        echo "Usage: $0 {start|stop|status|restart}"
+        exit 1
+        ;;
+esac
