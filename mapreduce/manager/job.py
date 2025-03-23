@@ -26,13 +26,15 @@ class Job:
         self.pending_tasks = deque()  # Tasks to be assigned
         self.in_progress_tasks = {}  # task_id -> worker
         self.completed_tasks = set()
-
+        self.condition = threading.Condition()
         self.lock = threading.Lock()  # Protect shared state
 
     def add_task(self, task):
         """Add a new task to the pending queue."""
         with self.lock:
             self.pending_tasks.append(task)
+        with self.condition:
+            self.condition.notify_all()
 
     def next_task(self):
         """Retrieve the next task for assignment, if available."""
@@ -65,11 +67,12 @@ class Job:
                 self.phase = JobPhase.DONE
 
     def task_reset(self, task_id):
-        """Re-enqueue a task if its worker failed."""
-        with self.lock:
+        """Re-enqueue a task if its worker failed and notify waiting threads."""
+        with self.condition:
             if task_id in self.in_progress_tasks:
                 del self.in_progress_tasks[task_id]
-                self.pending_tasks.appendleft(task_id)  # Re-add to the front
+                self.pending_tasks.appendleft(task_id)  # Re-add to front
+                self.condition.notify_all()  # Re-add to the front
 
     def is_complete(self):
         """Return True if all tasks are finished."""
