@@ -1,20 +1,15 @@
-"""MapReduce framework Manager node."""
-
 import os
 import tempfile
 import logging
 import json
 import time
 import threading
-import click
 import socket
-import mapreduce.utils
-from job import *
-
+from collections import deque
+from job import Job, JobPhase
 
 # Configure logging
 LOGGER = logging.getLogger(__name__)
-
 
 class Manager:
     """Represent a MapReduce framework Manager node."""
@@ -38,6 +33,7 @@ class Manager:
         self.job_id, self.mapper_executable, self.reducer_executable, self.output_directory, self.num_reducers = job_params
         self.threads = []
         self.shutdown_event = threading.Event()  # Shutdown flag
+        self.worker_condition = threading.Condition()  # Condition for worker availability
 
         # Create a job based on the provided parameters
         self.create_job(*job_params)
@@ -70,7 +66,84 @@ class Manager:
             num_reducers,
         )
         LOGGER.info(f"Job {self.job.job_id} created, starting mapping phase.")
-        
+
+    def get_available_worker(self):
+        """ Get the next available worker. """
+        for worker in self.workers:
+            if worker not in self.busy_workers and worker not in self.dead_workers:
+                return worker
+        return None  # All workers are dead
+    # ------------------------------- General Task Management -------------------------------
+    def assign_task_to_worker(self, worker, task):
+        """ Assign a single task to an available worker. """
+        # Ensure task is assigned only if the worker is not busy
+        with self.job.lock:  # Critical section for modifying busy workers
+            if worker not in self.busy_workers:
+                self.busy_workers.add(worker)
+                task_id = task["task_message"]["task_id"]
+                if self.job.assign_task(task_id, worker):  # Update the Job to assign this task
+                    self.send_task_to_worker(worker, task)
+                    return True
+        return False
+
+    def send_task_to_worker(self, worker, task):
+        """ Send the task to the worker via TCP. """
+        worker_host, worker_port = worker
+        try:
+            tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            tcp_socket.connect((worker_host, worker_port))
+            task_data = json.dumps(task)
+            tcp_socket.send(task_data.encode())
+            tcp_socket.close()
+        except Exception as e:
+            LOGGER.warning(f"Failed to send task to worker {worker}: {e}")
+            self.dead_workers.add(worker)  # Mark as dead and reassign task
+            self.reassign_tasks(worker)
+
+    def reassign_tasks(self, dead_worker_key):
+        """ Reassign tasks that were allocated to the dead worker. """
+        with self.job.lock:
+            failed_tasks = [
+                task_id for task_id, worker in self.job.in_progress_tasks.items()
+                if worker == dead_worker_key
+            ]
+
+            # Reset failed tasks and notify waiting threads
+            for task_id in failed_tasks:
+                self.job.task_reset(task_id)
+                LOGGER.warning(f"Task {task_id} reassigned from dead worker {dead_worker_key}")
+
+        with self.job.condition:
+            self.job.condition.notify_all()
+
+    def assign_task_to_next_worker(self, task):
+        """ Assign task to the next available worker. """
+        available_worker = self.get_available_worker()
+        if available_worker:
+            task.assigned_worker = available_worker
+            self.send_task_to_worker(available_worker, task)
+    
+    def handle_worker_message(self, message):
+        """Processes worker messages (task completion, failure, etc.)."""
+        message_data = json.loads(message)
+
+        if message_data["message_type"] == "task_complete":
+            worker = tuple(message_data["worker"])
+            task_id = message_data["task_id"]
+
+            with self.job.lock:
+                # Remove worker from busy set and mark task as complete
+                if worker in self.busy_workers:
+                    self.busy_workers.remove(worker)
+                
+                self.job.task_finished(task_id)  # Update job state
+
+                LOGGER.info(f"Worker {worker} completed task {task_id}.")
+
+                # Notify any waiting threads that job state has changed
+                with self.job.condition:
+                    self.job.condition.notify_all()  # Wake up waiting threads
+
     # ------------------------------- Mapping Phase Functions -------------------------------
     def partition_input_files(self, input_files, num_mappers):
         """
@@ -88,77 +161,52 @@ class Manager:
 
         return partitions
 
-    def assign_task_to_worker(self, worker, task):
-        """ Assign a single task to an available worker. """
-        # Ensure task is assigned only if the worker is not busy
-        if worker not in self.busy_workers:
-            self.busy_workers.add(worker)
-            self.send_task_to_worker(worker, task)
-            return True
-        return False
-
     def start_mapping(self, input_files):
-        """ Start the mapping phase of the job. """
+        """Start the mapping phase with fault tolerance."""
         partitions = self.partition_input_files(input_files, self.job.num_reducers)
-        task_messages = self.assign_tasks_to_workers(self.workers, partitions, self.job.mapper_executable, self.job.output_directory, self.job.num_reducers)
-        
+
+        # Add all mapping tasks to the Job
         for task_id, input_paths in enumerate(partitions):
-            # Wait for an available worker if all are busy
-            while len(self.busy_workers) == len(self.workers):
-                time.sleep(1)  # Wait until a worker becomes free
+            task_message = {
+                "message_type": "new_map_task",
+                "task_id": task_id,
+                "input_paths": input_paths,
+                "executable": self.job.mapper_executable,
+                "output_directory": self.job.output_directory,
+                "num_partitions": self.job.num_reducers,
+            }
+            self.job.add_task(json.dumps(task_message))
+        # notify jobs added
+        with self.job.condition:
+            self.job.condition.notify_all()
 
-            # Assign task to the next available worker
-            available_worker = self.get_available_worker()
-            if available_worker:
-                task_message = {
-                    "message_type": "new_map_task",
-                    "task_id": task_id,
-                    "input_paths": input_paths,
-                    "executable": self.job.mapper_executable,
-                    "output_directory": self.job.output_directory,
-                    "num_partitions": self.job.num_reducers,
-                }
-                task = {"worker": available_worker, "task_message": json.dumps(task_message)}
-                
-                if self.assign_task_to_worker(available_worker, task):  # Assign task to worker
-                    LOGGER.info(f"Assigned task {task_id} to worker {available_worker}")
-                else:
-                    LOGGER.warning(f"Worker {available_worker} is busy. Task {task_id} not assigned.")
-            
-    def get_available_worker(self):
-        """ Get the next available worker. """
-        for worker in self.workers:
-            if worker not in self.busy_workers and worker not in self.dead_workers:
-                return worker
-        return None  # All workers are dead
-    
-    def send_task_to_worker(self, worker, task):
-        """ Send the task to the worker via TCP. """
-        worker_host, worker_port = worker
-        try:
-            tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            tcp_socket.connect((worker_host, worker_port))
-            task_data = json.dumps(task)
-            tcp_socket.send(task_data.encode())
-            tcp_socket.close()
-        except Exception as e:
-            LOGGER.warning(f"Failed to send task to worker {worker}: {e}")
-            self.dead_workers.add(worker)  # Mark as dead and reassign task
-            self.reassign_tasks(worker)
+        # Assign tasks to workers as they become available
+        def worker_task_handler():
+            while self.job.phase == JobPhase.MAPPING:
+                with self.job.condition:
+                    while not self.job.pending_tasks and self.job.phase == JobPhase.MAPPING:
+                        self.job.condition.wait()  # Wait until there are tasks to assign
 
-    def reassign_tasks(self, dead_worker_key):
-        """ Reassign tasks that were allocated to the dead worker. """
-        for task_id, worker in list(self.job.in_progress_tasks.items()):
-            if worker == dead_worker_key:
-                self.job.task_reset(task_id)  # Reset the task in the Job
-                self.assign_task_to_next_worker(task_id)
+                    worker = self.get_available_worker()
+                    if worker:
+                        task_data = self.job.next_task()
+                        if task_data:
+                            task_id = json.loads(task_data)["task_id"]
+                            if self.job.assign_task(task_id, worker):
+                                self.send_task_to_worker(worker, {"worker": worker, "task_message": task_data})
+                                LOGGER.info(f"Assigned task {task_id} to worker {worker}")
 
-    def assign_task_to_next_worker(self, task):
-        """ Assign task to the next available worker. """
-        available_worker = self.get_available_worker()
-        if available_worker:
-            task.assigned_worker = available_worker
-            self.send_task_to_worker(available_worker, task)
+        # Start worker task assignment in a thread
+        task_thread = threading.Thread(target=worker_task_handler, daemon=True)
+        self.threads.append(task_thread)
+        task_thread.start()
+
+        # Wait until all mapping tasks are done before moving to reducing
+        with self.job.condition:
+            while self.job.phase == JobPhase.MAPPING and not self.job.all_tasks_completed():
+                self.job.condition.wait()  # Wait until mapping is complete
+
+        self.start_reducing()  # Move to reducing phase
 
     # ------------------------------- Reducing Phase Functions -------------------------------
     def start_reducing(self):
@@ -198,30 +246,36 @@ class Manager:
 
         LOGGER.info(f"Received heartbeat from {worker_key}")
 
-        # Reset missed heartbeats counter for the worker
-        self.worker_heartbeats[worker_key] = 0
+        with self.job.lock:
+            # Reset missed heartbeats counter for the worker
+            self.worker_heartbeats[worker_key] = 0
+            # If the worker is in dead_workers, remove it
+            if worker_key in self.dead_workers:
+                self.dead_workers.remove(worker_key)
+                with self.job.condition:
+                    self.job.condition.notify_all()
+                LOGGER.info(f"Worker {worker_key} has been revived.")
+                # Notify other threads that the state of the worker has changed
 
-        # If the worker is in dead_workers, remove it
-        if worker_key in self.dead_workers:
-            self.dead_workers.remove(worker_key)
-            LOGGER.info(f"Worker {worker_key} has been revived.")
 
     def handle_dead_workers(self):
-        """ Monitor for dead workers and reassign tasks if needed. """
+        """Monitor for dead workers and reassign their tasks."""
         while not self.shutdown_event.is_set():
             time.sleep(5)  # Periodic check for dead workers
 
-            # Check for workers who have missed heartbeats
-            for worker_key, missed_heartbeats in list(self.worker_heartbeats.items()):
-                if missed_heartbeats >= 3:  # Worker missed 3 heartbeats
-                    if worker_key not in self.dead_workers:
-                        self.dead_workers.add(worker_key)
-                        LOGGER.warning(f"Worker {worker_key} is dead. Reassigning tasks.")
-                        self.reassign_tasks(worker_key)
+            with self.job.lock:
+                for worker_key, missed_heartbeats in list(self.worker_heartbeats.items()):
+                    if missed_heartbeats >= 3:  # Worker is dead
+                        if worker_key not in self.dead_workers:
+                            self.dead_workers.add(worker_key)
+                            LOGGER.warning(f"Worker {worker_key} is dead. Reassigning tasks.")
+                            self.reassign_tasks(worker_key)
 
-                # Increment missed heartbeat counter for alive workers
-                if worker_key not in self.dead_workers:
-                    self.worker_heartbeats[worker_key] += 1
+                    # Increment missed heartbeat count for alive workers
+                    if worker_key not in self.dead_workers:
+                        self.worker_heartbeats[worker_key] += 1
+            with self.job.condition:
+                self.job.condition.notify_all()
 
     # ------------------------------- Cleanup Function -------------------------------
     def cleanup(self):
