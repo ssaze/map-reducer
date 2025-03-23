@@ -5,6 +5,8 @@ import json
 import time
 import threading
 import socket
+import pathlib
+from pathlib import Path
 from collections import deque
 from job import Job, JobPhase
 
@@ -210,18 +212,52 @@ class Manager:
 
     # ------------------------------- Reducing Phase Functions -------------------------------
     def start_reducing(self):
-        """ Start the reducing phase of the job. """
+        """Start the reducing phase of the job."""
         # Ensure mapping is complete before transitioning to reducing
         if self.job.phase == JobPhase.MAPPING:
             while self.job.pending_tasks or self.job.in_progress_tasks:
                 time.sleep(1)  # Wait until all mapping tasks are complete
             self.job.phase = JobPhase.REDUCING  # Transition to reducing phase
 
-        # Now process the reducing tasks
-        while self.job.phase == JobPhase.REDUCING:
-            task = self.job.next_task()
-            if task:
-                self.assign_task_to_next_worker(task)
+        shared_temp_dir = self.tmpdir  # The shared directory for intermediate map outputs
+        num_reducers = self.job.num_reducers
+        worker_list = list(self.workers)  # Get the list of available workers
+
+        # Ensure there are workers available
+        if not worker_list:
+            LOGGER.error("No workers available for reducing phase.")
+            return
+
+        # Dictionary to store reduce tasks
+        reduce_tasks = {i: [] for i in range(num_reducers)}
+
+        # Identify all map output files
+        map_output_files = list(pathlib.Path(shared_temp_dir).glob("maptask*-part*"))
+
+        # Assign files to partitions
+        for file in map_output_files:
+            partition_number = int(file.name.split('-')[1].split('part')[1])  # Extract partition number
+            reduce_tasks[partition_number].append(str(file))  # Store file path
+
+        # Assign reduce tasks to workers
+        task_id = 0
+        for partition, files in reduce_tasks.items():
+            worker = worker_list[task_id % len(worker_list)]  # Round-robin assignment
+            message = {
+                "message_type": "new_reduce_task",
+                "task_id": task_id,
+                "input_paths": files,
+                "executable": self.job.reducer_executable,
+                "output_directory": self.job.output_directory
+            }
+
+            # Add the reduce task to the job queue
+            self.job.add_task(json.dumps(message))
+            task_id += 1
+
+        # Notify that tasks have been added
+        with self.job.condition:
+            self.job.condition.notify_all()
 
     # ------------------------------- Worker Heartbeat and Failure Handling -------------------------------
     def listen_for_heartbeats(self):
