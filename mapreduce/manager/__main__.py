@@ -25,6 +25,8 @@ class Manager:
             os.getcwd(),
         )
 
+        threading.Thread(target=self.listen_for_commands, daemon=True).start()
+
         self.host = host
         self.port = port
         self.workers = deque()  # Worker info
@@ -145,6 +147,32 @@ class Manager:
                 # Notify any waiting threads that job state has changed
                 with self.job.condition:
                     self.job.condition.notify_all()  # Wake up waiting threads
+
+    def listen_for_commands(self):
+        """Main TCP server to receive shutdown command."""
+        tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        tcp_socket.bind((self.host, self.port))
+        tcp_socket.listen()
+
+        LOGGER.info("Manager is listening for job submissions or shutdown on TCP %s:%s", self.host, self.port)
+
+        while not self.shutdown_event.is_set():
+            try:
+                conn, _ = tcp_socket.accept()
+                with conn:
+                    message = conn.recv(4096).decode()
+                    if not message:
+                        continue
+                    message_data = json.loads(message)
+
+                    if message_data["message_type"] == "shutdown":
+                        LOGGER.info("Received shutdown request")
+                        self.forward_shutdown_to_workers()
+                        self.shutdown_event.set()
+            except Exception as e:
+                LOGGER.error(f"Error in TCP command listener: {e}")
+
 
     # ------------------------------- Mapping Phase Functions -------------------------------
     def partition_input_files(self, input_files, num_mappers):
