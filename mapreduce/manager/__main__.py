@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 import logging
 import json
@@ -8,7 +9,7 @@ import socket
 import pathlib
 from pathlib import Path
 from collections import deque
-from job import Job, JobPhase
+from mapreduce.manager.job import Job, JobPhase
 
 # Configure logging
 LOGGER = logging.getLogger(__name__)
@@ -16,8 +17,8 @@ LOGGER = logging.getLogger(__name__)
 class Manager:
     """Represent a MapReduce framework Manager node."""
 
-    def __init__(self, host, port, job_params):
-        """Construct a Manager instance, start listening for messages, and create a Job."""
+    def __init__(self, host, port, job_params=None):
+        """Construct a Manager instance, start listening for messages, and optionally create a Job."""
         LOGGER.info(
             "Starting manager host=%s port=%s pwd=%s",
             host,
@@ -25,39 +26,48 @@ class Manager:
             os.getcwd(),
         )
 
-        threading.Thread(target=self.listen_for_commands, daemon=True).start()
-
         self.host = host
         self.port = port
-        self.workers = deque()  # Worker info
+        self.workers = deque()
         self.busy_workers = set()
-        self.worker_heartbeats = {}  # Worker heartbeat tracking
-        self.dead_workers = set()  # Workers that failed
-        self.job = None  # Current job being executed
-        self.job_id, self.mapper_executable, self.reducer_executable, self.output_directory, self.num_reducers = job_params
+        self.worker_heartbeats = {}
+        self.dead_workers = set()
+        self.job = None
         self.threads = []
-        self.shutdown_event = threading.Event()  # Shutdown flag
-        self.worker_condition = threading.Condition()  # Condition for worker availability
+        self.shutdown_event = threading.Event()
+        self.worker_condition = threading.Condition()
 
-        # Create a job based on the provided parameters
-        self.create_job(*job_params)
+        # Start TCP command listener (e.g., for shutdown)
+        command_thread = threading.Thread(target=self.listen_for_commands, daemon=True)
+        command_thread.start()
+        self.threads.append(command_thread)
 
-        # Create temporary directory for shared data
-        prefix = f"mapreduce-shared-"
-        with tempfile.TemporaryDirectory(prefix=prefix) as self.tmpdir:
-            LOGGER.info("Created tmpdir %s", self.tmpdir)
-            self.start_heartbeat_listener()  # Start heartbeat listener
-            self.start_dead_worker_handler()  # Start dead worker handler
+        # If job_params is provided, create the job and proceed
+        if job_params is not None:
+            self.job_id, self.mapper_executable, self.reducer_executable, self.output_directory, self.num_reducers = job_params
+            self.create_job(*job_params)
 
-            try:
-                self.shutdown_event.wait()  # Wait for shutdown signal
-            except KeyboardInterrupt:
-                LOGGER.info("Shutdown signal received.")
-            finally:
-                LOGGER.info("Manager shutting down")
-                self.cleanup()
+            # Create temporary directory for shared map/reduce files
+            prefix = f"mapreduce-shared-"
+            with tempfile.TemporaryDirectory(prefix=prefix) as self.tmpdir:
+                LOGGER.info("Created tmpdir %s", self.tmpdir)
+                self.start_heartbeat_listener()
+                self.start_dead_worker_handler()
 
-        LOGGER.info("Cleaned up tmpdir %s", self.tmpdir)
+                try:
+                    self.shutdown_event.wait()  # Wait until shutdown signal
+                except KeyboardInterrupt:
+                    LOGGER.info("Shutdown signal received.")
+                finally:
+                    LOGGER.info("Manager shutting down")
+                    self.cleanup()
+
+                LOGGER.info("Cleaned up tmpdir %s", self.tmpdir)
+        else:
+            # No job running; just wait for shutdown (used in test_shutdown)
+            self.shutdown_event.wait()
+            LOGGER.info("Manager received shutdown event (no job). Cleaning up.")
+            self.cleanup()
 
     # ------------------------------- Job Creation and Initialization -------------------------------
     def create_job(self, job_id, mapper_executable, reducer_executable, output_directory, num_reducers):
@@ -148,31 +158,49 @@ class Manager:
                 with self.job.condition:
                     self.job.condition.notify_all()  # Wake up waiting threads
 
+
+    # ------------------------------- Worker Shutdown -------------------------------
+    def forward_shutdown_to_workers(self):
+        """Send shutdown message to all registered workers."""
+        for worker_host, worker_port in self.workers:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.connect((worker_host, worker_port))
+                    shutdown_message = json.dumps({"message_type": "shutdown"})
+                    s.sendall(shutdown_message.encode("utf-8"))
+                    LOGGER.info(f"Sent shutdown message to worker {worker_host}:{worker_port}")
+            except Exception as e:
+                LOGGER.warning(f"Failed to send shutdown to worker {worker_host}:{worker_port}: {e}")
+
+
     def listen_for_commands(self):
         """Main TCP server to receive shutdown command."""
-        tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        tcp_socket.bind((self.host, self.port))
-        tcp_socket.listen()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_socket:
+            tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            tcp_socket.bind((self.host, self.port))
+            tcp_socket.listen()
 
-        LOGGER.info("Manager is listening for job submissions or shutdown on TCP %s:%s", self.host, self.port)
+            LOGGER.info("Manager is listening for job submissions or shutdown on TCP %s:%s", self.host, self.port)
 
-        while not self.shutdown_event.is_set():
-            try:
-                conn, _ = tcp_socket.accept()
-                with conn:
-                    message = conn.recv(4096).decode()
-                    if not message:
-                        continue
-                    message_data = json.loads(message)
+            while not self.shutdown_event.is_set():
+                try:
+                    conn, addr = tcp_socket.accept()
+                    with conn:
+                        message = conn.recv(4096).decode()
+                        if not message:
+                            continue
 
-                    if message_data["message_type"] == "shutdown":
-                        LOGGER.info("Received shutdown request")
-                        self.forward_shutdown_to_workers()
-                        self.shutdown_event.set()
-            except Exception as e:
-                LOGGER.error(f"Error in TCP command listener: {e}")
+                        message_data = json.loads(message)
+                        LOGGER.debug("TCP recv\n%s", json.dumps(message_data, indent=2))
 
+                        if message_data.get("message_type") == "shutdown":
+                            LOGGER.info("Received shutdown request")
+                            self.forward_shutdown_to_workers()
+                            self.shutdown_event.set()
+                            sys.exit(0)
+
+                except Exception as e:
+                    LOGGER.error(f"Error in TCP command listener: {e}")
 
     # ------------------------------- Mapping Phase Functions -------------------------------
     def partition_input_files(self, input_files, num_mappers):
