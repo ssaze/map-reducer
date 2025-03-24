@@ -37,6 +37,17 @@ class Manager:
         self.shutdown_event = threading.Event()
         self.worker_condition = threading.Condition()
 
+        self.job_queue = deque()
+        self.next_job_id = 0
+
+        # Create temporary directory for shared map/reduce files
+        self.tmpdir = tempfile.mkdtemp(prefix="mapreduce-shared-")
+        LOGGER.info("Created tmpdir %s", self.tmpdir)
+
+        job_thread = threading.Thread(target=self.handle_job_queue, daemon=True)
+        job_thread.start()
+        self.threads.append(job_thread)
+
         # Start TCP command listener (e.g., for shutdown)
         command_thread = threading.Thread(target=self.listen_for_commands, daemon=True)
         command_thread.start()
@@ -49,20 +60,18 @@ class Manager:
 
             # Create temporary directory for shared map/reduce files
             prefix = f"mapreduce-shared-"
-            with tempfile.TemporaryDirectory(prefix=prefix) as self.tmpdir:
-                LOGGER.info("Created tmpdir %s", self.tmpdir)
-                self.start_heartbeat_listener()
-                self.start_dead_worker_handler()
+            self.start_heartbeat_listener()
+            self.start_dead_worker_handler()
 
-                try:
-                    self.shutdown_event.wait()  # Wait until shutdown signal
-                except KeyboardInterrupt:
-                    LOGGER.info("Shutdown signal received.")
-                finally:
-                    LOGGER.info("Manager shutting down")
-                    self.cleanup()
+            try:
+                self.shutdown_event.wait()  # Wait until shutdown signal
+            except KeyboardInterrupt:
+                LOGGER.info("Shutdown signal received.")
+            finally:
+                LOGGER.info("Manager shutting down")
+                self.cleanup()
 
-                LOGGER.info("Cleaned up tmpdir %s", self.tmpdir)
+            LOGGER.info("Cleaned up tmpdir %s", self.tmpdir)
         else:
             # No job running; just wait for shutdown (used in test_shutdown)
             self.shutdown_event.wait()
@@ -186,9 +195,19 @@ class Manager:
                 try:
                     conn, addr = tcp_socket.accept()
                     with conn:
-                        message = conn.recv(4096).decode()
-                        if not message:
+                        try:
+                            message_raw = conn.recv(4096)
+                        except StopIteration:
+                            # End of mock data during testing
+                            LOGGER.warning("Mocked conn.recv() exhausted.")
+                            break
+
+                        if not message_raw:
                             continue
+
+                        message = message_raw.decode()
+                        message_data = json.loads(message)
+
 
                         message_data = json.loads(message)
                         LOGGER.debug("TCP recv\n%s", json.dumps(message_data, indent=2))
@@ -197,7 +216,7 @@ class Manager:
                             LOGGER.info("Received shutdown request")
                             self.forward_shutdown_to_workers()
                             self.shutdown_event.set()
-                            sys.exit(0)
+                            return  # Don't call sys.exit or cleanup here
 
                         elif message_data.get("message_type") == "register":
                             worker_host = message_data["worker_host"]
@@ -211,8 +230,35 @@ class Manager:
                             ack_msg = {"message_type": "register_ack"}
                             conn.sendall(json.dumps(ack_msg).encode("utf-8"))
 
+                        elif message_data.get("message_type") == "new_manager_job":
+                            job_id = self.next_job_id
+                            self.next_job_id += 1
+
+                            input_directory = message_data["input_directory"]
+                            output_directory = message_data["output_directory"]
+                            mapper_executable = message_data["mapper_executable"]
+                            reducer_executable = message_data["reducer_executable"]
+                            num_mappers = message_data["num_mappers"]
+                            num_reducers = message_data["num_reducers"]
+
+                            job = Job(
+                                job_id,
+                                mapper_executable,
+                                reducer_executable,
+                                output_directory,
+                                num_reducers,
+                            )
+
+                            LOGGER.info(f"Received new job request. Assigned job_id={job_id}")
+                            self.job_queue.append((job, input_directory, num_mappers))
+
+                            # Optional: Trigger job processing now or from a separate thread
+
+
                 except Exception as e:
-                    LOGGER.error(f"Error in TCP command listener: {e}")
+                    import traceback
+                    LOGGER.error("Error in TCP command listener:\n%s", traceback.format_exc())
+
 
     # ------------------------------- Mapping Phase Functions -------------------------------
     def partition_input_files(self, input_files, num_mappers):
@@ -230,6 +276,50 @@ class Manager:
             partitions[idx % num_mappers].append(file)  # round robin assignment
 
         return partitions
+
+    def handle_job_queue(self):
+        while not self.shutdown_event.is_set():
+            if not self.job_queue:
+                time.sleep(1)
+                continue
+
+            if self.shutdown_event.is_set():
+                break  # ✅ double check before processing new job
+
+
+            # Get next job
+            job, input_dir, num_mappers = self.job_queue.popleft()
+            job_id = job.job_id
+            output_dir = job.output_directory
+            mapper = job.mapper_executable
+            reducer = job.reducer_executable
+            num_reducers = job.num_reducers
+
+            # Step 1: Clean and recreate output directory
+            if os.path.exists(output_dir):
+                shutil.rmtree(output_dir)
+            os.makedirs(output_dir)
+
+            # Step 2: Create shared temp dir for this job
+            self.shared_job_dir = os.path.join(self.tmpdir, f"job-{job_id:05d}")
+            os.makedirs(self.shared_job_dir)
+
+            LOGGER.info(f"Starting job {job_id} with mapper={mapper}, reducer={reducer}")
+
+            # Step 3: Set and run Job
+            self.job = job
+            input_files = sorted(Path(input_dir).glob("*"))
+            input_paths = [str(p) for p in input_files]
+            self.start_mapping(input_paths)
+
+            # Wait for job to complete
+            with self.job.condition:
+                while not self.job.is_complete():
+                    self.job.condition.wait()
+
+            LOGGER.info(f"Job {job_id} complete")
+
+
 
     def start_mapping(self, input_files):
         """Start the mapping phase with fault tolerance."""
@@ -252,10 +342,11 @@ class Manager:
 
         # Assign tasks to workers as they become available
         def worker_task_handler():
-            while self.job.phase == JobPhase.MAPPING:
+            while self.job.phase == JobPhase.MAPPING and not self.shutdown_event.is_set():
                 with self.job.condition:
-                    while not self.job.pending_tasks and self.job.phase == JobPhase.MAPPING:
-                        self.job.condition.wait()  # Wait until there are tasks to assign
+                    while not self.job.pending_tasks and self.job.phase == JobPhase.MAPPING and not self.shutdown_event.is_set():
+                        self.job.condition.wait(timeout=1)
+
 
                     worker = self.get_available_worker()
                     if worker:
@@ -287,7 +378,7 @@ class Manager:
                 time.sleep(1)  # Wait until all mapping tasks are complete
             self.job.phase = JobPhase.REDUCING  # Transition to reducing phase
 
-        shared_temp_dir = self.tmpdir  # The shared directory for intermediate map outputs
+        shared_temp_dir = self.shared_job_dir  # The shared directory for intermediate map outputs
         num_reducers = self.job.num_reducers
         worker_list = list(self.workers)  # Get the list of available workers
 
@@ -386,6 +477,9 @@ class Manager:
         """ Cleanup resources on shutdown. """
         self.shutdown_event.set()  # Signal shutdown
         for thread in self.threads:
-            thread.join()  # Ensure all threads finish
+            thread.join(timeout=2)
+            if thread.is_alive():
+                LOGGER.warning("Thread %s did not exit cleanly.", thread.name)
 
         LOGGER.info("All threads have completed.")
+        sys.exit(0)
