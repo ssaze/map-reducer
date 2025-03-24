@@ -13,12 +13,13 @@ class JobPhase(Enum):
 class Job:
     """Represents a MapReduce Job, tracking its tasks and progress."""
 
-    def __init__(self, job_id, mapper_executable, reducer_executable, output_directory, num_reducers):
+    def __init__(self, job_id, mapper_executable, reducer_executable, output_directory, num_mappers, num_reducers):
         self.job_id = job_id
         self.mapper_executable = mapper_executable
         self.reducer_executable = reducer_executable
         self.output_directory = output_directory
         self.num_reducers = num_reducers
+        self.num_mappers = num_mappers
 
         self.phase = JobPhase.MAPPING  # Start in the mapping phase
 
@@ -42,6 +43,11 @@ class Job:
             if self.pending_tasks:
                 return self.pending_tasks.popleft()
             return None
+
+    def all_tasks_completed(self):
+        """Return True if all tasks in the current phase are completed."""
+        with self.lock:
+            return not self.pending_tasks and not self.in_progress_tasks
 
     def assign_task(self, task_id, worker):
         """Assign a task to a worker."""

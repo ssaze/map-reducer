@@ -60,7 +60,8 @@ class Worker:
 
         # TEMP: Hold the Worker open (will be replaced later)
         LOGGER.debug("IMPLEMENT ME!")
-        time.sleep(1)
+        time.sleep(120)
+
 
 
 

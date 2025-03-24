@@ -55,7 +55,7 @@ class Manager:
 
         # If job_params is provided, create the job and proceed
         if job_params is not None:
-            self.job_id, self.mapper_executable, self.reducer_executable, self.output_directory, self.num_reducers = job_params
+            self.job_id, self.mapper_executable, self.reducer_executable, self.output_directory, self.num_mappers, self.num_reducers = job_params
             self.create_job(*job_params)
 
             # Create temporary directory for shared map/reduce files
@@ -79,13 +79,14 @@ class Manager:
             self.cleanup()
 
     # ------------------------------- Job Creation and Initialization -------------------------------
-    def create_job(self, job_id, mapper_executable, reducer_executable, output_directory, num_reducers):
+    def create_job(self, job_id, mapper_executable, reducer_executable, output_directory, num_mappers, num_reducers):
         """Create and start a new MapReduce job."""
         self.job = Job(
             job_id,
             mapper_executable,
             reducer_executable,
             output_directory,
+            num_mappers,
             num_reducers,
         )
         LOGGER.info(f"Job {self.job.job_id} created, starting mapping phase.")
@@ -103,7 +104,8 @@ class Manager:
         with self.job.lock:  # Critical section for modifying busy workers
             if worker not in self.busy_workers:
                 self.busy_workers.add(worker)
-                task_id = task["task_message"]["task_id"]
+                task_message = json.loads(task["task_message"])
+                task_id = task_message["task_id"]
                 if self.job.assign_task(task_id, worker):  # Update the Job to assign this task
                     self.send_task_to_worker(worker, task)
                     return True
@@ -116,8 +118,10 @@ class Manager:
             tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             tcp_socket.connect((worker_host, worker_port))
             task_data = json.dumps(task)
-            tcp_socket.send(task_data.encode())
+            LOGGER.info(f"Calling sendall() with: {task_data}")
+            tcp_socket.sendall(task_data.encode()) #changed to sendall EDIT
             tcp_socket.close()
+            LOGGER.info(f"Sending task to worker {worker}: {task}") # Log the task sent (should be file01, etc)
         except Exception as e:
             LOGGER.warning(f"Failed to send task to worker {worker}: {e}")
             self.dead_workers.add(worker)  # Mark as dead and reassign task
@@ -176,7 +180,7 @@ class Manager:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.connect((worker_host, worker_port))
                     shutdown_message = json.dumps({"message_type": "shutdown"})
-                    s.sendall(shutdown_message.encode("utf-8"))
+                    s.sendall(shutdown_message.encode('utf-8'))
                     LOGGER.info(f"Sent shutdown message to worker {worker_host}:{worker_port}")
             except Exception as e:
                 LOGGER.warning(f"Failed to send shutdown to worker {worker_host}:{worker_port}: {e}")
@@ -228,7 +232,7 @@ class Manager:
 
                             # Send register_ack
                             ack_msg = {"message_type": "register_ack"}
-                            conn.sendall(json.dumps(ack_msg).encode("utf-8"))
+                            conn.sendall(json.dumps(ack_msg).encode('utf-8'))
 
                         elif message_data.get("message_type") == "new_manager_job":
                             job_id = self.next_job_id
@@ -246,6 +250,7 @@ class Manager:
                                 mapper_executable,
                                 reducer_executable,
                                 output_directory,
+                                num_mappers,
                                 num_reducers,
                             )
 
@@ -293,6 +298,7 @@ class Manager:
             output_dir = job.output_directory
             mapper = job.mapper_executable
             reducer = job.reducer_executable
+            num_mappers = job.num_mappers
             num_reducers = job.num_reducers
 
             # Step 1: Clean and recreate output directory
@@ -323,7 +329,7 @@ class Manager:
 
     def start_mapping(self, input_files):
         """Start the mapping phase with fault tolerance."""
-        partitions = self.partition_input_files(input_files, self.job.num_reducers)
+        partitions = self.partition_input_files(input_files, self.job.num_mappers)
 
         # Add all mapping tasks to the Job
         for task_id, input_paths in enumerate(partitions):
@@ -483,3 +489,19 @@ class Manager:
 
         LOGGER.info("All threads have completed.")
         sys.exit(0)
+
+
+    def main():
+        import argparse
+
+        parser = argparse.ArgumentParser(description="MapReduce Manager")
+        parser.add_argument("--host", type=str, default="localhost", help="Host to bind the manager")
+        parser.add_argument("--port", type=int, default=6000, help="Port to bind the manager")
+        parser.add_argument("--loglevel", type=str, default="INFO", help="Logging level")
+        args = parser.parse_args()
+
+        logging.basicConfig(level=getattr(logging, args.loglevel.upper()))
+        Manager(args.host, args.port)
+
+if __name__ == "__main__":
+    main()
