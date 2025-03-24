@@ -7,6 +7,7 @@ import time
 import threading
 import socket
 import pathlib
+import shutil
 from pathlib import Path
 from collections import deque
 from mapreduce.manager.job import Job, JobPhase
@@ -491,17 +492,17 @@ class Manager:
         sys.exit(0)
 
 
-    def main():
-        import argparse
+def main():
+    import argparse
 
-        parser = argparse.ArgumentParser(description="MapReduce Manager")
-        parser.add_argument("--host", type=str, default="localhost", help="Host to bind the manager")
-        parser.add_argument("--port", type=int, default=6000, help="Port to bind the manager")
-        parser.add_argument("--loglevel", type=str, default="INFO", help="Logging level")
-        args = parser.parse_args()
+    parser = argparse.ArgumentParser(description="MapReduce Manager")
+    parser.add_argument("--host", type=str, default="localhost", help="Host to bind the manager")
+    parser.add_argument("--port", type=int, default=6000, help="Port to bind the manager")
+    parser.add_argument("--loglevel", type=str, default="INFO", help="Logging level")
+    args = parser.parse_args()
 
-        logging.basicConfig(level=getattr(logging, args.loglevel.upper()))
-        Manager(args.host, args.port)
+    logging.basicConfig(level=getattr(logging, args.loglevel.upper()))
+    Manager(args.host, args.port)
 
 if __name__ == "__main__":
     main()

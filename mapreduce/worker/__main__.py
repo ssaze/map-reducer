@@ -51,6 +51,15 @@ class Worker:
 
             if response_message.get("message_type") != "register_ack":
                 raise Exception("Unexpected message from Manager during registration")
+                # Logging
+
+        LOGGER.info("Starting worker host=%s port=%s pwd=%s", host, port, os.getcwd())
+        LOGGER.info("manager_host=%s manager_port=%s", manager_host, manager_port)
+        LOGGER.debug("TCP recv\n%s", json.dumps(response_message, indent=2))
+
+        # TEMP: Hold the Worker open (will be replaced later)
+        LOGGER.debug("IMPLEMENT ME!")
+        time.sleep(120)
 
     def send_message(self, message_dict):
         """Send a message to the Manager."""
@@ -108,16 +117,6 @@ class Worker:
             "worker_port": self.port,
         }
         self.send_message(message_dict)
-
-
-        # Logging
-        LOGGER.info("Starting worker host=%s port=%s pwd=%s", host, port, os.getcwd())
-        LOGGER.info("manager_host=%s manager_port=%s", manager_host, manager_port)
-        LOGGER.debug("TCP recv\n%s", json.dumps(response_message, indent=2))
-
-        # TEMP: Hold the Worker open (will be replaced later)
-        LOGGER.debug("IMPLEMENT ME!")
-        time.sleep(120)
 
 
 
