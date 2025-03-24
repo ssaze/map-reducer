@@ -159,7 +159,7 @@ class Manager:
                     self.job.condition.notify_all()  # Wake up waiting threads
 
 
-    # ------------------------------- Worker Shutdown -------------------------------
+    # ------------------------------- Worker Register and Shutdown -------------------------------
     def forward_shutdown_to_workers(self):
         """Send shutdown message to all registered workers."""
         for worker_host, worker_port in self.workers:
@@ -174,7 +174,7 @@ class Manager:
 
 
     def listen_for_commands(self):
-        """Main TCP server to receive shutdown command."""
+        """Main TCP server to receive shutdown and register commands."""
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_socket:
             tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             tcp_socket.bind((self.host, self.port))
@@ -198,6 +198,18 @@ class Manager:
                             self.forward_shutdown_to_workers()
                             self.shutdown_event.set()
                             sys.exit(0)
+
+                        elif message_data.get("message_type") == "register":
+                            worker_host = message_data["worker_host"]
+                            worker_port = message_data["worker_port"]
+                            worker_key = (worker_host, worker_port)
+                            self.workers.append(worker_key)
+
+                            LOGGER.info("Registering Worker %s", worker_key)
+
+                            # Send register_ack
+                            ack_msg = {"message_type": "register_ack"}
+                            conn.sendall(json.dumps(ack_msg).encode("utf-8"))
 
                 except Exception as e:
                     LOGGER.error(f"Error in TCP command listener: {e}")
