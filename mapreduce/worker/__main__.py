@@ -52,6 +52,63 @@ class Worker:
             if response_message.get("message_type") != "register_ack":
                 raise Exception("Unexpected message from Manager during registration")
 
+    def send_message(self, message_dict):
+        """Send a message to the Manager."""
+        message = json.dumps(message_dict)
+        self.socket.sendall(message.encode('utf-8'))
+
+    def run_map_task(self, task_id, input_file, num_partitions, output_directory):
+        """Execute the map task on the Worker."""
+        with tempfile.TemporaryDirectory(prefix=f"mapreduce-local-task{task_id:05d}-") as tmpdir:
+            # Run the map executable
+            map_executable = 'map'  # Assuming 'map' is the map executable
+            self.partition_map_output(task_id, input_file, map_executable, num_partitions, tmpdir)
+            self.sort_and_move_files(tmpdir, output_directory)
+
+            # Notify Manager that the task is finished
+            self.notify_manager(task_id)
+
+    def partition_map_output(self, task_id, input_file, map_executable, num_partitions, tmpdir):
+        """Run the map executable and partition the output."""
+        LOGGER.info(f"Running map executable on input file: {input_file}")
+        
+        # Open the input file and run the map executable
+        with open(input_file, 'r') as infile:
+            with subprocess.Popen([map_executable], stdin=infile, stdout=subprocess.PIPE, text=True) as map_process:
+                for line in map_process.stdout:
+                    # Extract the key from the line and partition it
+                    key, _ = line.split('\t', 1)
+                    partition_number = self.compute_partition(key, num_partitions)
+                    partition_file = os.path.join(tmpdir, f"maptask{task_id:05d}-part{partition_number:05d}")
+                    with open(partition_file, 'a') as partition:
+                        partition.write(line)
+
+    def compute_partition(self, key, num_partitions):
+        """Compute the partition number based on the key."""
+        keyhash = int(hashlib.md5(key.encode('utf-8')).hexdigest(), 16)
+        return keyhash % num_partitions
+
+    def sort_and_move_files(self, tmpdir, output_directory):
+        """Sort and move the output files."""
+        # Sort each partition file
+        for partition_file in os.listdir(tmpdir):
+            partition_path = os.path.join(tmpdir, partition_file)
+            subprocess.run(["sort", "-o", partition_path, partition_path], check=True)
+
+            # Move the sorted file to the output directory
+            shutil.move(partition_path, os.path.join(output_directory, partition_file))
+            LOGGER.info(f"Moved sorted partition file to {output_directory}")
+
+    def notify_manager(self, task_id):
+        """Notify the Manager that the task is finished."""
+        message_dict = {
+            "message_type": "finished",
+            "task_id": task_id,
+            "worker_host": self.host,
+            "worker_port": self.port,
+        }
+        self.send_message(message_dict)
+
 
         # Logging
         LOGGER.info("Starting worker host=%s port=%s pwd=%s", host, port, os.getcwd())
