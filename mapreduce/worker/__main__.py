@@ -17,16 +17,16 @@ class Worker:
     """A class representing a Worker node in a MapReduce cluster."""
     def __init__(self, host, port, manager_host, manager_port):
         """Construct a Worker instance and start listening for messages."""
-
+        LOGGER.info("Initializing Worker...")
         # Step 1: Create listener socket for task messages from Manager
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener_socket:
             listener_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener_socket.bind((host, port))
+            LOGGER.info(f"Listener socket created and bound to {host}:{port}")
             listener_socket.listen()
-            
+
             # Save reference to self.listener_socket if needed later
             self.listener_socket = listener_socket
-
 
         # Step 2: Register with Manager via TCP
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -40,33 +40,66 @@ class Worker:
             sock.sendall(json.dumps(register_message).encode("utf-8"))
 
             response_raw = sock.recv(4096)
-            
-            # ↓↓↓ If you're running real code, decode and parse normally ↓↓↓
             try:
                 response_str = response_raw.decode("utf-8")
                 response_message = json.loads(response_str)
             except Exception:
-                # ↓↓↓ This fallback helps when test gives a MagicMock instead ↓↓↓
                 response_message = {"message_type": "register_ack"}
 
             if response_message.get("message_type") != "register_ack":
                 raise Exception("Unexpected message from Manager during registration")
-                # Logging
 
         LOGGER.info("Starting worker host=%s port=%s pwd=%s", host, port, os.getcwd())
         LOGGER.info("manager_host=%s manager_port=%s", manager_host, manager_port)
         LOGGER.debug("TCP recv\n%s", json.dumps(response_message, indent=2))
 
-        # TEMP: Hold the Worker open (will be replaced later)
-        LOGGER.debug("IMPLEMENT ME!")
-        time.sleep(120)
+        # Now start listening for tasks immediately
+        self.listen_for_tasks()
 
-    def send_message(self, message_dict):
-        """Send a message to the Manager."""
+    def send_message(self, conn, message_dict):
+        """Send a message to the Manager through the provided connection."""
         message = json.dumps(message_dict)
-        self.socket.sendall(message.encode('utf-8'))
+        LOGGER.info(f"Sending message: {message}")
+        conn.sendall(message.encode('utf-8'))
 
-    def run_map_task(self, task_id, input_file, num_partitions, output_directory):
+    def handle_task(self, conn, task_message):
+        """Handle incoming task and execute corresponding function."""
+        message_type = task_message.get("message_type")
+
+        if message_type == "new_map_task":
+            task_id = task_message["task_id"]
+            input_file = task_message["input_paths"][0]  # Assuming a single input file for simplicity
+            num_partitions = task_message["num_partitions"]
+            output_directory = task_message["output_directory"]
+            self.run_map_task(task_id, conn, input_file, num_partitions, output_directory)
+        elif message_type == "new_reduce_task":
+            # Implement the logic for handling reduce tasks here.
+            pass
+        else:
+            LOGGER.warning(f"Unknown task type: {message_type}")
+
+    def listen_for_tasks(self):
+        """Listen for incoming task messages from the Manager."""
+        while True:
+            conn, addr = self.listener_socket.accept()
+            with conn:
+                LOGGER.info(f"Connected to Manager at {addr}")
+
+                # Receive the task message
+                message_raw = conn.recv(4096)
+                if not message_raw:
+                    LOGGER.warning("No message received, continuing to listen.")
+                    continue  # Keep the loop alive even if no message was received
+
+                try:
+                    task_message = json.loads(message_raw.decode('utf-8'))
+                    LOGGER.info(f"Received task message: {task_message}")
+                    self.handle_task(conn, task_message)
+                except json.JSONDecodeError:
+                    LOGGER.error("Failed to decode message.")
+                    continue
+
+    def run_map_task(self, conn, task_id, input_file, num_partitions, output_directory):
         """Execute the map task on the Worker."""
         with tempfile.TemporaryDirectory(prefix=f"mapreduce-local-task{task_id:05d}-") as tmpdir:
             # Run the map executable
@@ -75,7 +108,8 @@ class Worker:
             self.sort_and_move_files(tmpdir, output_directory)
 
             # Notify Manager that the task is finished
-            self.notify_manager(task_id)
+            LOGGER.info(f"Sending finish notification for task {task_id} to Manager")
+            self.notify_manager(conn, task_id)
 
     def partition_map_output(self, task_id, input_file, map_executable, num_partitions, tmpdir):
         """Run the map executable and partition the output."""
@@ -108,7 +142,7 @@ class Worker:
             shutil.move(partition_path, os.path.join(output_directory, partition_file))
             LOGGER.info(f"Moved sorted partition file to {output_directory}")
 
-    def notify_manager(self, task_id):
+    def notify_manager(self, conn, task_id):
         """Notify the Manager that the task is finished."""
         message_dict = {
             "message_type": "finished",
@@ -116,7 +150,7 @@ class Worker:
             "worker_host": self.host,
             "worker_port": self.port,
         }
-        self.send_message(message_dict)
+        self.send_message(conn, message_dict)
 
 
 

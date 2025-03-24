@@ -94,14 +94,18 @@ class Manager:
 
     def get_available_worker(self):
         """ Get the next available worker. """
+        LOGGER.debug("Checking for available worker...")
         for worker in self.workers:
             if worker not in self.busy_workers and worker not in self.dead_workers:
+                LOGGER.debug(f"Worker {worker} is available.")
                 return worker
+        LOGGER.debug("No available workers.")
         return None  # All workers are dead
     # ------------------------------- General Task Management -------------------------------
     def assign_task_to_worker(self, worker, task):
         """ Assign a single task to an available worker. """
         # Ensure task is assigned only if the worker is not busy
+        LOGGER.debug(f"Attempting to assign task {task} to worker {worker}.")
         with self.job.lock:  # Critical section for modifying busy workers
             if worker not in self.busy_workers:
                 self.busy_workers.add(worker)
@@ -109,7 +113,9 @@ class Manager:
                 task_id = task_message["task_id"]
                 if self.job.assign_task(task_id, worker):  # Update the Job to assign this task
                     self.send_task_to_worker(worker, task)
+                    LOGGER.debug(f"Task {task_id} assigned to worker {worker}.")
                     return True
+        LOGGER.warning(f"Failed to assign task {task['task_message']} to worker {worker}: worker is busy or dead.")
         return False
 
     def send_task_to_worker(self, worker, task):
@@ -118,6 +124,7 @@ class Manager:
         try:
             tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             tcp_socket.connect((worker_host, worker_port))
+            LOGGER.info(f"Connected to worker {worker} host {worker_host}")
             task_data = json.dumps(task)
             LOGGER.info(f"Calling sendall() with: {task_data}")
             tcp_socket.sendall(task_data.encode()) #changed to sendall EDIT
@@ -130,6 +137,7 @@ class Manager:
 
     def reassign_tasks(self, dead_worker_key):
         """ Reassign tasks that were allocated to the dead worker. """
+        LOGGER.debug(f"Reassigning tasks from dead worker {dead_worker_key}.")
         with self.job.lock:
             failed_tasks = [
                 task_id for task_id, worker in self.job.in_progress_tasks.items()
@@ -150,9 +158,11 @@ class Manager:
         if available_worker:
             task.assigned_worker = available_worker
             self.send_task_to_worker(available_worker, task)
+            LOGGER.debug(f"Assigned task {task} to next available worker {available_worker}.")
     
     def handle_worker_message(self, message):
         """Processes worker messages (task completion, failure, etc.)."""
+        LOGGER.debug(f"Processing worker message: {message}")
         message_data = json.loads(message)
 
         if message_data["message_type"] == "task_complete":
@@ -176,6 +186,7 @@ class Manager:
     # ------------------------------- Worker Register and Shutdown -------------------------------
     def forward_shutdown_to_workers(self):
         """Send shutdown message to all registered workers."""
+        LOGGER.debug(f"Forwarding shutdown to workers.")
         for worker_host, worker_port in self.workers:
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -218,6 +229,7 @@ class Manager:
                         LOGGER.debug("TCP recv\n%s", json.dumps(message_data, indent=2))
 
                         if message_data.get("message_type") == "shutdown":
+                            LOGGER.info("Received shutdown request")
                             LOGGER.info("Received shutdown request")
                             self.forward_shutdown_to_workers()
                             self.shutdown_event.set()
@@ -275,17 +287,19 @@ class Manager:
         num_mappers: number of mapper workers available
         return a list of partitions
         """
+        LOGGER.debug("Partitioning input files.")
         input_files.sort()  # sort by name
         partitions = [[] for _ in range(num_mappers)]  # Create empty lists for each mapper
 
         for idx, file in enumerate(input_files):
             partitions[idx % num_mappers].append(file)  # round robin assignment
-
+        LOGGER.debug(f"Partitioned input files: {partitions}")
         return partitions
 
     def handle_job_queue(self):
         while not self.shutdown_event.is_set():
             if not self.job_queue:
+                LOGGER.debug("Job queue is empty. Waiting for new job.")
                 time.sleep(1)
                 continue
 
@@ -363,6 +377,8 @@ class Manager:
                             if self.job.assign_task(task_id, worker):
                                 self.send_task_to_worker(worker, {"worker": worker, "task_message": task_data})
                                 LOGGER.info(f"Assigned task {task_id} to worker {worker}")
+                            else:
+                                LOGGER.warning(f"Task {task_id} could not be assigned to worker {worker}")
 
         # Start worker task assignment in a thread
         task_thread = threading.Thread(target=worker_task_handler, daemon=True)
@@ -426,6 +442,12 @@ class Manager:
             self.job.condition.notify_all()
 
     # ------------------------------- Worker Heartbeat and Failure Handling -------------------------------
+    def start_heartbeat_listener(self):
+        """Start listening for heartbeats from workers (UDP listener)."""
+        heartbeat_thread = threading.Thread(target=self.listen_for_heartbeats, daemon=True)
+        self.threads.append(heartbeat_thread)
+        heartbeat_thread.start()
+
     def listen_for_heartbeats(self):
         """ Listen for UDP heartbeats from workers. """
         udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -458,6 +480,12 @@ class Manager:
                     self.job.condition.notify_all()
                 LOGGER.info(f"Worker {worker_key} has been revived.")
                 # Notify other threads that the state of the worker has changed
+
+    def start_dead_worker_handler(self):
+        """Start handling dead workers and reassign their tasks."""
+        dead_worker_thread = threading.Thread(target=self.handle_dead_workers, daemon=True)
+        self.threads.append(dead_worker_thread)
+        dead_worker_thread.start()
 
 
     def handle_dead_workers(self):
