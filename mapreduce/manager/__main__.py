@@ -129,6 +129,7 @@ class Manager:
             LOGGER.info(f"Calling sendall() with: {task_data}")
             tcp_socket.sendall(task_data.encode()) #changed to sendall EDIT
             tcp_socket.close()
+            self.busy_workers.add(worker)
             LOGGER.info(f"Sending task to worker {worker}: {task}") # Log the task sent (should be file01, etc)
         except Exception as e:
             LOGGER.warning(f"Failed to send task to worker {worker}: {e}")

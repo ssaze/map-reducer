@@ -55,7 +55,7 @@ class Job:
             if task_id in self.in_progress_tasks:
                 LOGGER.info("TASK ALREADY ASSIGNED")
                 return False  # Already assigned
-            LOGGER.info("TASK HAS BEEN ASSIGNED")
+            LOGGER.info(f"TASK {task_id} HAS BEEN ASSIGNED TO {worker}")
             self.in_progress_tasks[task_id] = worker
             return True
 
@@ -65,9 +65,11 @@ class Job:
             if task_id in self.in_progress_tasks:
                 del self.in_progress_tasks[task_id]  # Remove from in-progress
                 self.completed_tasks.add(task_id)  # Mark as complete
+                LOGGER.info(f"TASK {task_id} COMPLETED")
 
             # Check if we transition to reducing phase
             if self.phase == JobPhase.MAPPING and not self.pending_tasks and not self.in_progress_tasks:
+                LOGGER.info(f"MOVING TO REDUCING")
                 self.phase = JobPhase.REDUCING
 
             # Check if we are fully done
