@@ -19,14 +19,15 @@ class Worker:
         """Construct a Worker instance and start listening for messages."""
         LOGGER.info("Initializing Worker...")
         # Step 1: Create listener socket for task messages from Manager
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener_socket:
-            listener_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            listener_socket.bind((host, port))
-            LOGGER.info(f"Listener socket created and bound to {host}:{port}")
-            listener_socket.listen()
+        self.listener_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener_socket.bind((host, port))
+        self.listener_socket.listen()
+        LOGGER.info(f"Listener socket created and bound to {host}:{port}")
 
-            # Save reference to self.listener_socket if needed later
-            self.listener_socket = listener_socket
+
+        # Save reference to self.listener_socket if needed later
+        self.listener_socket = listener_socket
 
         # Step 2: Register with Manager via TCP
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -67,7 +68,8 @@ class Worker:
 
         if message_type == "new_map_task":
             task_id = task_message["task_id"]
-            input_file = task_message["input_paths"][0]  # Assuming a single input file for simplicity
+            for input_file in task_message["input_paths"]:
+                self.run_map_task(conn, task_id, input_file, num_partitions, output_directory, map_executable)
             num_partitions = task_message["num_partitions"]
             output_directory = task_message["output_directory"]
             self.run_map_task(task_id, conn, input_file, num_partitions, output_directory)
@@ -93,6 +95,10 @@ class Worker:
                 try:
                     task_message = json.loads(message_raw.decode('utf-8'))
                     LOGGER.info(f"Received task message: {task_message}")
+
+                    task_message = json.loads(message_raw.decode("utf-8"))
+                    LOGGER.debug("DELETEOOOO received\n%s", json.dumps(task_message, indent=2))
+
                     self.handle_task(conn, task_message)
                 except json.JSONDecodeError:
                     LOGGER.error("Failed to decode message.")
@@ -144,10 +150,9 @@ class Worker:
     def notify_manager(self, conn, task_id):
         """Notify the Manager that the task is finished."""
         message_dict = {
-            "message_type": "finished",
+            "message_type": "task_complete",
             "task_id": task_id,
-            "worker_host": self.host,
-            "worker_port": self.port,
+            "worker": [self.host, self.port],
         }
         self.send_message(conn, message_dict)
 

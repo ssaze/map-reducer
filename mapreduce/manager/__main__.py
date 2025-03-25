@@ -106,18 +106,25 @@ class Manager:
     # ------------------------------- General Task Management -------------------------------
     def assign_task_to_worker(self, worker, task):
         """ Assign a single task to an available worker. """
-        # Ensure task is assigned only if the worker is not busy
         LOGGER.debug(f"Attempting to assign task {task} to worker {worker}.")
-        with self.job.lock:  # Critical section for modifying busy workers
+        with self.job.lock:
             if worker not in self.busy_workers:
                 self.busy_workers.add(worker)
-                task_message = json.loads(task["task_message"])
+
+                task_message = task["task_message"]
+                # If task_message is still a string, parse it
+                if isinstance(task_message, str):
+                    task_message = json.loads(task_message)
+                    task["task_message"] = task_message  # update with parsed version
+
                 task_id = task_message["task_id"]
-                if self.job.assign_task(task_id, worker):  # Update the Job to assign this task
+
+                if self.job.assign_task(task_id, worker):
                     self.send_task_to_worker(worker, task)
                     LOGGER.debug(f"Task {task_id} assigned to worker {worker}.")
                     return True
-        LOGGER.warning(f"Failed to assign task {task['task_message']} to worker {worker}: worker is busy or dead.")
+
+        LOGGER.warning(f"Failed to assign task to worker {worker}: worker is busy or dead.")
         return False
 
     def send_task_to_worker(self, worker, task):
@@ -132,7 +139,10 @@ class Manager:
             tcp_socket.sendall(task_data.encode()) #changed to sendall EDIT
             tcp_socket.close()
             self.busy_workers.add(worker)
-            LOGGER.info(f"Sending task to worker {worker}: {task}") # Log the task sent (should be file01, etc)
+            
+            task_id = task.get("task_id")
+            LOGGER.info(f"Sending task {task_id} to worker {worker}")
+
         except Exception as e:
             LOGGER.warning(f"Failed to send task to worker {worker}: {e}")
             self.dead_workers.add(worker)  # Mark as dead and reassign task
@@ -166,6 +176,7 @@ class Manager:
     def handle_worker_message(self, message):
         """Processes worker messages (task completion, failure, etc.)."""
         LOGGER.debug(f"PROCESSING worker message: {message}")
+        LOGGER.debug("received\n%s", json.dumps(message_data, indent=2))
         message_data = json.loads(message)
 
         if message_data["message_type"] == "task_complete":
@@ -188,7 +199,7 @@ class Manager:
                     self.job.condition.notify_all()  # Wake up waiting threads
 
 
-    # ------------------------------- Worker Register and Shutdown -------------------------------
+    # ------------------------------- Worker Register and Shutdown and Listening Commands -------------------------------
     def forward_shutdown_to_workers(self):
         """Send shutdown message to all registered workers."""
         LOGGER.debug(f"Forwarding shutdown to workers.")
@@ -277,6 +288,8 @@ class Manager:
                             LOGGER.info(f"JOB OUTPUT DIRECTORY: {output_directory}")
                             self.job_queue.append((job, input_directory, num_mappers))
 
+                        elif message_data.get("message_type") == "task_complete":
+                            self.handle_worker_message(message)
 
                 except Exception as e:
                     import traceback
@@ -357,8 +370,8 @@ class Manager:
             task_message = {
                 "message_type": "new_map_task",
                 "task_id": task_id,
-                "executable": self.job.mapper_executable,
                 "input_paths": input_paths,
+                "executable": self.job.mapper_executable,
                 "output_directory": self.job.output_directory,
                 "num_partitions": self.job.num_reducers,
             }
@@ -382,7 +395,7 @@ class Manager:
                             task_id = json.loads(task_data)["task_id"]
                             if self.job.assign_task(task_id, worker):
                                 print("\n" + task_data + "\n")
-                                self.send_task_to_worker(worker, {"worker": worker, "task_message": task_data})
+                                self.send_task_to_worker(worker, json.loads(task_data))
                                 LOGGER.info(f"Assigned task {task_id} to worker {worker}")
                             else:
                                 LOGGER.warning(f"Task {task_id} could not be assigned to worker {worker}")
