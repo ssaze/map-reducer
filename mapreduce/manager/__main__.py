@@ -37,7 +37,7 @@ class Manager:
         self.threads = []
         self.shutdown_event = threading.Event()
         self.worker_condition = threading.Condition()
-        self.heartbeat_port = self.port + 1
+
         self.job_queue = deque()
         self.next_job_id = 0
 
@@ -468,8 +468,8 @@ class Manager:
     def listen_for_heartbeats(self):
         """ Listen for UDP heartbeats from workers. """
         udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        udp_socket.bind((self.host, self.heartbeat_port))
-        LOGGER.info("Manager is listening for heartbeats on UDP %s:%s", self.host, self.heartbeat_port)
+        udp_socket.bind((self.host, self.port))
+        LOGGER.info("Manager is listening for heartbeats on UDP %s:%s", self.host, self.port)
         LOGGER.info(f"Initial shutdown event: {self.shutdown_event.is_set()}")
         while not self.shutdown_event.is_set():
             LOGGER.info(f"Shutdown event: {self.shutdown_event.is_set()}")
