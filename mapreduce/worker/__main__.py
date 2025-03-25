@@ -40,14 +40,13 @@ class Worker:
             sock.sendall(json.dumps(register_message).encode("utf-8"))
 
             response_raw = sock.recv(4096)
-            try:
-                response_str = response_raw.decode("utf-8")
-                response_message = json.loads(response_str)
-            except Exception:
-                response_message = {"message_type": "register_ack"}
+            response_message = json.loads(response_raw.decode('utf-8'))
 
-            if response_message.get("message_type") != "register_ack":
-                raise Exception("Unexpected message from Manager during registration")
+            if response_message.get("message_type") == "register_ack":
+                print("Registration successful!")
+                self.start_heartbeats() # TODO
+            else:
+                print("Failed to register with Manager!")
 
         LOGGER.info("Starting worker host=%s port=%s pwd=%s", host, port, os.getcwd())
         LOGGER.info("manager_host=%s manager_port=%s", manager_host, manager_port)
@@ -177,4 +176,5 @@ def main(host, port, manager_host, manager_port, logfile, loglevel):
     Worker(host, port, manager_host, manager_port)
 
 if __name__ == "__main__":
+    print("BEFORE MAIN")
     main()

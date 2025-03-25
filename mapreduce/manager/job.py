@@ -1,7 +1,7 @@
 import threading
 from collections import deque
 from enum import Enum
-
+import logging
 
 class JobPhase(Enum):
     """Enumeration for the job phase."""
@@ -9,7 +9,7 @@ class JobPhase(Enum):
     REDUCING = "reducing"
     DONE = "done"
 
-
+LOGGER = logging.getLogger(__name__)
 class Job:
     """Represents a MapReduce Job, tracking its tasks and progress."""
 
@@ -53,7 +53,9 @@ class Job:
         """Assign a task to a worker."""
         with self.lock:
             if task_id in self.in_progress_tasks:
+                LOGGER.info("TASK ALREADY ASSIGNED")
                 return False  # Already assigned
+            LOGGER.info("TASK HAS BEEN ASSIGNED")
             self.in_progress_tasks[task_id] = worker
             return True
 

@@ -326,7 +326,7 @@ class Manager:
             os.makedirs(self.shared_job_dir)
 
             LOGGER.info(f"Starting job {job_id} with mapper={mapper}, reducer={reducer}")
-
+            # TODO CHECK
             # Step 3: Set and run Job
             self.job = job
             input_files = sorted(Path(input_dir).glob("*"))
@@ -375,6 +375,7 @@ class Manager:
                         if task_data:
                             task_id = json.loads(task_data)["task_id"]
                             if self.job.assign_task(task_id, worker):
+                                print("\n" + task_data + "\n")
                                 self.send_task_to_worker(worker, {"worker": worker, "task_message": task_data})
                                 LOGGER.info(f"Assigned task {task_id} to worker {worker}")
                             else:
@@ -495,7 +496,7 @@ class Manager:
 
             with self.job.lock:
                 for worker_key, missed_heartbeats in list(self.worker_heartbeats.items()):
-                    if missed_heartbeats >= 3:  # Worker is dead
+                    if missed_heartbeats >= 5:  # Worker is dead
                         if worker_key not in self.dead_workers:
                             self.dead_workers.add(worker_key)
                             LOGGER.warning(f"Worker {worker_key} is dead. Reassigning tasks.")
