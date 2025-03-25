@@ -56,6 +56,7 @@ class Manager:
 
         # If job_params is provided, create the job and proceed
         if job_params is not None:
+            LOGGER.info("JOB GOING HERE 1")
             self.job_id, self.mapper_executable, self.reducer_executable, self.output_directory, self.num_mappers, self.num_reducers = job_params
             self.create_job(*job_params)
 
@@ -82,6 +83,7 @@ class Manager:
     # ------------------------------- Job Creation and Initialization -------------------------------
     def create_job(self, job_id, mapper_executable, reducer_executable, output_directory, num_mappers, num_reducers):
         """Create and start a new MapReduce job."""
+        LOGGER.info("JOB GOING HERE 2")
         self.job = Job(
             job_id,
             mapper_executable,
@@ -163,16 +165,18 @@ class Manager:
     
     def handle_worker_message(self, message):
         """Processes worker messages (task completion, failure, etc.)."""
-        LOGGER.debug(f"Processing worker message: {message}")
+        LOGGER.debug(f"PROCESSING worker message: {message}")
         message_data = json.loads(message)
 
         if message_data["message_type"] == "task_complete":
+            LOGGER.info(f"TASK MARKED COMPLETED")
             worker = tuple(message_data["worker"])
             task_id = message_data["task_id"]
 
             with self.job.lock:
                 # Remove worker from busy set and mark task as complete
                 if worker in self.busy_workers:
+                    LOGGER.info(f"REMOVING {worker} FROM BUSY WORKERS")
                     self.busy_workers.remove(worker)
                 
                 self.job.task_finished(task_id)  # Update job state
@@ -247,6 +251,7 @@ class Manager:
                             # Send register_ack
                             ack_msg = {"message_type": "register_ack"}
                             conn.sendall(json.dumps(ack_msg).encode('utf-8'))
+                            LOGGER.info(f"SENT ACKNOWLEDGEMENT {ack_msg}")
 
                         elif message_data.get("message_type") == "new_manager_job":
                             job_id = self.next_job_id
@@ -269,9 +274,8 @@ class Manager:
                             )
 
                             LOGGER.info(f"Received new job request. Assigned job_id={job_id}")
+                            LOGGER.info(f"JOB OUTPUT DIRECTORY: {output_directory}")
                             self.job_queue.append((job, input_directory, num_mappers))
-
-                            # Optional: Trigger job processing now or from a separate thread
 
 
                 except Exception as e:
@@ -326,7 +330,8 @@ class Manager:
             self.shared_job_dir = os.path.join(self.tmpdir, f"job-{job_id:05d}")
             os.makedirs(self.shared_job_dir)
 
-            LOGGER.info(f"Starting job {job_id} with mapper={mapper}, reducer={reducer}")
+            job.output_directory = self.shared_job_dir
+            LOGGER.info(f"Starting job {job_id} with mapper={mapper}, reducer={reducer}, dir={job.output_directory}, HANDLE_JOB_QUEUE")
             # TODO CHECK
             # Step 3: Set and run Job
             self.job = job
@@ -352,8 +357,8 @@ class Manager:
             task_message = {
                 "message_type": "new_map_task",
                 "task_id": task_id,
-                "input_paths": input_paths,
                 "executable": self.job.mapper_executable,
+                "input_paths": input_paths,
                 "output_directory": self.job.output_directory,
                 "num_partitions": self.job.num_reducers,
             }
