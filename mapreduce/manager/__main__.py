@@ -37,7 +37,7 @@ class Manager:
         self.threads = []
         self.shutdown_event = threading.Event()
         self.worker_condition = threading.Condition()
-
+        self.heartbeat_port = self.port + 1
         self.job_queue = deque()
         self.next_job_id = 0
 
@@ -54,31 +54,22 @@ class Manager:
         command_thread.start()
         self.threads.append(command_thread)
 
-        # If job_params is provided, create the job and proceed
-        if job_params is not None:
-            LOGGER.info("JOB GOING HERE 1")
-            self.job_id, self.mapper_executable, self.reducer_executable, self.output_directory, self.num_mappers, self.num_reducers = job_params
-            self.create_job(*job_params)
+        LOGGER.info("INITIALIZED PROPERLY")
 
-            # Create temporary directory for shared map/reduce files
-            prefix = f"mapreduce-shared-"
-            self.start_heartbeat_listener()
-            self.start_dead_worker_handler()
+        # Create temporary directory for shared map/reduce files
+        prefix = f"mapreduce-shared-"
+        self.start_heartbeat_listener()
+        self.start_dead_worker_handler()
 
-            try:
-                self.shutdown_event.wait()  # Wait until shutdown signal
-            except KeyboardInterrupt:
-                LOGGER.info("Shutdown signal received.")
-            finally:
-                LOGGER.info("Manager shutting down")
-                self.cleanup()
-
-            LOGGER.info("Cleaned up tmpdir %s", self.tmpdir)
-        else:
-            # No job running; just wait for shutdown (used in test_shutdown)
-            self.shutdown_event.wait()
-            LOGGER.info("Manager received shutdown event (no job). Cleaning up.")
+        try:
+            self.shutdown_event.wait()  # Wait until shutdown signal
+        except KeyboardInterrupt:
+            LOGGER.info("Shutdown signal received.")
+        finally:
+            LOGGER.info("Manager shutting down")
             self.cleanup()
+
+        LOGGER.info("Cleaned up tmpdir %s", self.tmpdir)
 
     # ------------------------------- Job Creation and Initialization -------------------------------
     def create_job(self, job_id, mapper_executable, reducer_executable, output_directory, num_mappers, num_reducers):
@@ -96,17 +87,17 @@ class Manager:
 
     def get_available_worker(self):
         """ Get the next available worker. """
-        LOGGER.debug("Checking for available worker...")
+        LOGGER.info("Checking for available worker...")
         for worker in self.workers:
             if worker not in self.busy_workers and worker not in self.dead_workers:
-                LOGGER.debug(f"Worker {worker} is available.")
+                LOGGER.info(f"Worker {worker} is available.")
                 return worker
-        LOGGER.debug("No available workers.")
+        LOGGER.info("No available workers.")
         return None  # All workers are dead
     # ------------------------------- General Task Management -------------------------------
     def assign_task_to_worker(self, worker, task):
         """ Assign a single task to an available worker. """
-        LOGGER.debug(f"Attempting to assign task {task} to worker {worker}.")
+        LOGGER.info(f"Attempting to assign task {task} to worker {worker}.")
         with self.job.lock:
             if worker not in self.busy_workers:
                 self.busy_workers.add(worker)
@@ -121,7 +112,7 @@ class Manager:
 
                 if self.job.assign_task(task_id, worker):
                     self.send_task_to_worker(worker, task)
-                    LOGGER.debug(f"Task {task_id} assigned to worker {worker}.")
+                    LOGGER.info(f"Task {task_id} assigned to worker {worker}.")
                     return True
 
         LOGGER.warning(f"Failed to assign task to worker {worker}: worker is busy or dead.")
@@ -150,7 +141,7 @@ class Manager:
 
     def reassign_tasks(self, dead_worker_key):
         """ Reassign tasks that were allocated to the dead worker. """
-        LOGGER.debug(f"Reassigning tasks from dead worker {dead_worker_key}.")
+        LOGGER.info(f"Reassigning tasks from dead worker {dead_worker_key}.")
         with self.job.lock:
             failed_tasks = [
                 task_id for task_id, worker in self.job.in_progress_tasks.items()
@@ -171,18 +162,23 @@ class Manager:
         if available_worker:
             task.assigned_worker = available_worker
             self.send_task_to_worker(available_worker, task)
-            LOGGER.debug(f"Assigned task {task} to next available worker {available_worker}.")
+            LOGGER.info(f"Assigned task {task} to next available worker {available_worker}.")
     
     def handle_worker_message(self, message):
-        """Processes worker messages (task completion, failure, etc.)."""
-        LOGGER.debug(f"PROCESSING worker message: {message}")
-        LOGGER.debug("received\n%s", json.dumps(message_data, indent=2))
+        """!!! Processes TASK COMPLETION !!!"""
         message_data = json.loads(message)
+        LOGGER.info(f"PROCESSING worker message: {message}")
+        LOGGER.info("received\n%s", json.dumps(message_data, indent=2))
 
-        if message_data["message_type"] == "task_complete":
+        if message_data["message_type"] == "finished":
             LOGGER.info(f"TASK MARKED COMPLETED")
-            worker = tuple(message_data["worker"])
+
+            worker = (message_data["worker_host"], message_data["worker_port"])
             task_id = message_data["task_id"]
+
+            if worker not in self.busy_workers:
+                LOGGER.warning(f"ERROR: UNEXPECTED completion message from {worker} for task {task_id}")
+                return
 
             with self.job.lock:
                 # Remove worker from busy set and mark task as complete
@@ -240,8 +236,6 @@ class Manager:
                         message = message_raw.decode()
                         message_data = json.loads(message)
 
-
-                        message_data = json.loads(message)
                         LOGGER.debug("TCP recv\n%s", json.dumps(message_data, indent=2))
 
                         if message_data.get("message_type") == "shutdown":
@@ -261,6 +255,7 @@ class Manager:
 
                             # Send register_ack
                             ack_msg = {"message_type": "register_ack"}
+                            LOGGER.info(f"Preparing to send register_ack: {ack_msg}")
                             conn.sendall(json.dumps(ack_msg).encode('utf-8'))
                             LOGGER.info(f"SENT ACKNOWLEDGEMENT {ack_msg}")
 
@@ -288,7 +283,8 @@ class Manager:
                             LOGGER.info(f"JOB OUTPUT DIRECTORY: {output_directory}")
                             self.job_queue.append((job, input_directory, num_mappers))
 
-                        elif message_data.get("message_type") == "task_complete":
+                        elif message_data.get("message_type") == "finished":
+                            LOGGER.info(f"Received 'finished' message: {message_data}")
                             self.handle_worker_message(message)
 
                 except Exception as e:
@@ -464,6 +460,7 @@ class Manager:
     # ------------------------------- Worker Heartbeat and Failure Handling -------------------------------
     def start_heartbeat_listener(self):
         """Start listening for heartbeats from workers (UDP listener)."""
+        LOGGER.info("Starting HEARTBEAT listener thread...")
         heartbeat_thread = threading.Thread(target=self.listen_for_heartbeats, daemon=True)
         self.threads.append(heartbeat_thread)
         heartbeat_thread.start()
@@ -471,16 +468,30 @@ class Manager:
     def listen_for_heartbeats(self):
         """ Listen for UDP heartbeats from workers. """
         udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        udp_socket.bind((self.host, self.port))
-        LOGGER.info("Manager is listening for heartbeats on UDP %s:%s", self.host, self.port)
-
+        udp_socket.bind((self.host, self.heartbeat_port))
+        LOGGER.info("Manager is listening for heartbeats on UDP %s:%s", self.host, self.heartbeat_port)
+        LOGGER.info(f"Initial shutdown event: {self.shutdown_event.is_set()}")
         while not self.shutdown_event.is_set():
+            LOGGER.info(f"Shutdown event: {self.shutdown_event.is_set()}")
             try:
-                message, addr = udp_socket.recvfrom(1024)
+                LOGGER.info(f"Before receiving heartbeat call")
+                recv_result = udp_socket.recvfrom(1024)
+                LOGGER.info(f"OFFICE HOURS HERE recvfrom result: {recv_result}")
+                # message, addr = udp_socket.recvfrom(1024)
+                # LOGGER.info(f"Received message: {message} from address: {addr}")
+                break
+                if not message or not addr:
+                    LOGGER.warning("Received empty message or address from UDP socket")
+                    continue  # Skip empty messages
                 heartbeat_data = json.loads(message.decode())
                 self.process_heartbeat(heartbeat_data, addr)
+            except BlockingIOError: #Catch the correct exception
+                time.sleep(1) #sleep to prevent 100% cpu usage.
+                LOGGER.error(f"BLOCKING")
+                continue
             except Exception as e:
                 LOGGER.error(f"Error while processing heartbeat: {e}")
+                break
 
     def process_heartbeat(self, heartbeat_data, addr):
         """ Process heartbeats from workers, marking them as alive or dead. """

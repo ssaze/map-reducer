@@ -150,7 +150,7 @@ class Worker:
     def notify_manager(self, conn, task_id):
         """Notify the Manager that the task is finished."""
         message_dict = {
-            "message_type": "task_complete",
+            "message_type": "finished",
             "task_id": task_id,
             "worker": [self.host, self.port],
         }
