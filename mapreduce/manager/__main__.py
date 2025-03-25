@@ -124,7 +124,6 @@ class Manager:
         """ Send the task to the worker via TCP. """
         worker_host, worker_port = worker
         try:
-            # todo context manager + timeout
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_socket:
                 tcp_socket.connect((worker_host, worker_port))
                 tcp_socket.settimeout(1)
@@ -220,6 +219,7 @@ class Manager:
             tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             tcp_socket.bind((self.host, self.port))
             tcp_socket.listen()
+            tcp_socket.settimeout(1)
 
             LOGGER.info("Manager is listening for job submissions or shutdown on TCP %s:%s", self.host, self.port)
 
@@ -482,7 +482,6 @@ class Manager:
             LOGGER.info(f"Initial shutdown event: {self.shutdown_event.is_set()}")
 
             while not self.shutdown_event.is_set():
-                LOGGER.info(f"Shutdown event: {self.shutdown_event.is_set()}")
                 try:
                     LOGGER.info(f"Before receiving heartbeat call")
                     recv_result = udp_socket.recv(4096)
@@ -498,12 +497,16 @@ class Manager:
                         continue  # Skip empty messages
                     heartbeat_data = json.loads(message.decode())
                     self.process_heartbeat(heartbeat_data, addr)
+                except socket.timeout:
+                    LOGGER.error(f"TIMEOUT")
+                    continue
+
                 except BlockingIOError: #Catch the correct exception
                     time.sleep(1) #sleep to prevent 100% cpu usage.
                     LOGGER.error(f"BLOCKING")
                     continue
                 except Exception as e:
-                    LOGGER.error(f"Error while processing heartbeat: {e}")
+                    LOGGER.error(f"Error while processing heartbeat: {e}", exc_info=True)
                     break
 
     def process_heartbeat(self, heartbeat_data, addr):
