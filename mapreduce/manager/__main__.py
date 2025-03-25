@@ -58,7 +58,9 @@ class Manager:
 
         # Create temporary directory for shared map/reduce files
         prefix = f"mapreduce-shared-"
+        LOGGER.info(f"THREAD COUNT: {threading.active_count()}")
         self.start_heartbeat_listener()
+        LOGGER.info(f"THREAD COUNT: {threading.active_count()}")
         self.start_dead_worker_handler()
 
         try:
@@ -122,17 +124,19 @@ class Manager:
         """ Send the task to the worker via TCP. """
         worker_host, worker_port = worker
         try:
-            tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            tcp_socket.connect((worker_host, worker_port))
-            LOGGER.info(f"Connected to worker {worker} host {worker_host}")
-            task_data = json.dumps(task)
-            LOGGER.info(f"Calling sendall() with: {task_data}")
-            tcp_socket.sendall(task_data.encode()) #changed to sendall EDIT
-            tcp_socket.close()
-            self.busy_workers.add(worker)
-            
-            task_id = task.get("task_id")
-            LOGGER.info(f"Sending task {task_id} to worker {worker}")
+            # todo context manager + timeout
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_socket:
+                tcp_socket.connect((worker_host, worker_port))
+                tcp_socket.settimeout(1)
+                LOGGER.info(f"Connected to worker {worker} host {worker_host}")
+                task_data = json.dumps(task)
+                LOGGER.info(f"Calling sendall() with: {task_data}")
+                tcp_socket.sendall(task_data.encode()) #changed to sendall EDIT
+                tcp_socket.close()
+                self.busy_workers.add(worker)
+                
+                task_id = task.get("task_id")
+                LOGGER.info(f"Sending task {task_id} to worker {worker}")
 
         except Exception as e:
             LOGGER.warning(f"Failed to send task to worker {worker}: {e}")
@@ -318,7 +322,7 @@ class Manager:
                 continue
 
             if self.shutdown_event.is_set():
-                break  # ✅ double check before processing new job
+                break
 
 
             # Get next job
@@ -467,31 +471,40 @@ class Manager:
 
     def listen_for_heartbeats(self):
         """ Listen for UDP heartbeats from workers. """
-        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        udp_socket.bind((self.host, self.port))
-        LOGGER.info("Manager is listening for heartbeats on UDP %s:%s", self.host, self.port)
-        LOGGER.info(f"Initial shutdown event: {self.shutdown_event.is_set()}")
-        while not self.shutdown_event.is_set():
-            LOGGER.info(f"Shutdown event: {self.shutdown_event.is_set()}")
-            try:
-                LOGGER.info(f"Before receiving heartbeat call")
-                recv_result = udp_socket.recvfrom(1024)
-                LOGGER.info(f"OFFICE HOURS HERE recvfrom result: {recv_result}")
-                # message, addr = udp_socket.recvfrom(1024)
-                # LOGGER.info(f"Received message: {message} from address: {addr}")
-                break
-                if not message or not addr:
-                    LOGGER.warning("Received empty message or address from UDP socket")
-                    continue  # Skip empty messages
-                heartbeat_data = json.loads(message.decode())
-                self.process_heartbeat(heartbeat_data, addr)
-            except BlockingIOError: #Catch the correct exception
-                time.sleep(1) #sleep to prevent 100% cpu usage.
-                LOGGER.error(f"BLOCKING")
-                continue
-            except Exception as e:
-                LOGGER.error(f"Error while processing heartbeat: {e}")
-                break
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+            udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            udp_socket.bind((self.host, self.port))
+            udp_socket.settimeout(1)
+
+            LOGGER.info(f"UDP socket instance: {udp_socket}")
+            LOGGER.info(f"UDP recv function before calling: {udp_socket.recvfrom}")
+            LOGGER.info("Manager is listening for heartbeats on UDP %s:%s", self.host, self.port)
+            LOGGER.info(f"Initial shutdown event: {self.shutdown_event.is_set()}")
+
+            while not self.shutdown_event.is_set():
+                LOGGER.info(f"Shutdown event: {self.shutdown_event.is_set()}")
+                try:
+                    LOGGER.info(f"Before receiving heartbeat call")
+                    recv_result = udp_socket.recv(4096)
+                    LOGGER.info(f"\n \n \n RECV recvfrom result: {recv_result}")
+                    strng = recv_result.decode("utf-8")
+                    dict = json.loads(strng)
+                    LOGGER.info(f"\n \n \n HERE OFFICE HOURS HERE recvfrom result: {dict}")
+                    # message, addr = udp_socket.recvfrom(1024)
+                    # LOGGER.info(f"Received message: {message} from address: {addr}")
+                    break
+                    if not message or not addr:
+                        LOGGER.warning("Received empty message or address from UDP socket")
+                        continue  # Skip empty messages
+                    heartbeat_data = json.loads(message.decode())
+                    self.process_heartbeat(heartbeat_data, addr)
+                except BlockingIOError: #Catch the correct exception
+                    time.sleep(1) #sleep to prevent 100% cpu usage.
+                    LOGGER.error(f"BLOCKING")
+                    continue
+                except Exception as e:
+                    LOGGER.error(f"Error while processing heartbeat: {e}")
+                    break
 
     def process_heartbeat(self, heartbeat_data, addr):
         """ Process heartbeats from workers, marking them as alive or dead. """
@@ -556,7 +569,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="MapReduce Manager")
     parser.add_argument("--host", type=str, default="localhost", help="Host to bind the manager")
-    parser.add_argument("--port", type=int, default=6000, help="Port to bind the manager")
+    parser.add_argument("--port", type=int, default=8001, help="Port to bind the manager")
     parser.add_argument("--loglevel", type=str, default="INFO", help="Logging level")
     args = parser.parse_args()
 
