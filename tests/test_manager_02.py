@@ -110,6 +110,11 @@ def test_map(mocker, tmp_path):
         3001,
     )
 
+    print("MOCK SENDALL CALLS:")
+    for call in mock_sendall.call_args_list:
+        print(call)
+
+
     # Set the location where the Manager's temporary directory
     # will be created.
     tempfile.tempdir = tmp_path

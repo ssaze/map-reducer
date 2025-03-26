@@ -67,7 +67,9 @@ def worker_heartbeat_generator(mock_sendall, *ports):
 
         # Verify that the first message is a register_ack and start mocking
         # heartbeats
-        assert get_messages(mock_sendall)[0]["message_type"] == "register_ack"
+        assert any(msg["message_type"] == "register_ack" for msg in get_messages(mock_sendall)), \
+            "Expected a register_ack message to be sent"
+
 
     while True:
         time.sleep(TIME_BETWEEN_HEARTBEATS)

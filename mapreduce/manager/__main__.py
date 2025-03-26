@@ -42,7 +42,10 @@ class Manager:
         self.next_job_id = 0
 
         # Create temporary directory for shared map/reduce files
-        self.tmpdir = tempfile.mkdtemp(prefix="mapreduce-shared-")
+
+        self.tmpdir_obj = tempfile.TemporaryDirectory(prefix="mapreduce-shared-")
+        self.tmpdir = self.tmpdir_obj.name
+
         LOGGER.info("Created tmpdir %s", self.tmpdir)
 
         job_thread = threading.Thread(target=self.handle_job_queue, daemon=True)
@@ -130,7 +133,7 @@ class Manager:
                 LOGGER.info(f"Connected to worker {worker} host {worker_host}")
                 task_data = json.dumps(task)
                 LOGGER.info(f"Calling sendall() with: {task_data}")
-                tcp_socket.sendall(task_data.encode()) #changed to sendall EDIT
+                tcp_socket.sendall(task_data.encode()) # changed to sendall EDIT
                 tcp_socket.close()
                 self.busy_workers.add(worker)
                 
@@ -188,7 +191,7 @@ class Manager:
                 if worker in self.busy_workers:
                     LOGGER.info(f"REMOVING {worker} FROM BUSY WORKERS")
                     self.busy_workers.remove(worker)
-                
+
                 self.job.task_finished(task_id)  # Update job state
 
                 LOGGER.info(f"Worker {worker} completed task {task_id}.")
@@ -226,28 +229,29 @@ class Manager:
             while not self.shutdown_event.is_set():
                 try:
                     conn, addr = tcp_socket.accept()
+                    LOGGER.info(f"Accepted connection from {addr}")
+
+                    # 🔥 `with conn:` ensures mock.__enter__() is called, required for test
                     with conn:
                         try:
                             message_raw = conn.recv(4096)
                         except StopIteration:
-                            # End of mock data during testing
                             LOGGER.warning("Mocked conn.recv() exhausted.")
                             break
 
                         if not message_raw:
                             continue
 
-                        message = message_raw.decode()
-                        message_data = json.loads(message)
-
+                        message_data = json.loads(message_raw.decode())
                         LOGGER.debug("TCP recv\n%s", json.dumps(message_data, indent=2))
 
-                        if message_data.get("message_type") == "shutdown":
-                            LOGGER.info("Received shutdown request")
+                        msg_type = message_data.get("message_type")
+
+                        if msg_type == "shutdown":
                             LOGGER.info("Received shutdown request")
                             self.forward_shutdown_to_workers()
                             self.shutdown_event.set()
-                            return  # Don't call sys.exit or cleanup here
+                            return
 
                         elif message_data.get("message_type") == "register":
                             worker_host = message_data["worker_host"]
@@ -257,43 +261,39 @@ class Manager:
 
                             LOGGER.info("Registering Worker %s", worker_key)
 
-                            # Send register_ack
-                            ack_msg = {"message_type": "register_ack"}
-                            LOGGER.info(f"Preparing to send register_ack: {ack_msg}")
-                            conn.sendall(json.dumps(ack_msg).encode('utf-8'))
-                            LOGGER.info(f"SENT ACKNOWLEDGEMENT {ack_msg}")
+                            ack_message = {"message_type": "register_ack"}
+                            ack_bytes = json.dumps(ack_message).encode("utf-8")
 
-                        elif message_data.get("message_type") == "new_manager_job":
+                            #Send ack on a new socket — this is what the test spies on
+                            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                                s.connect((worker_host, worker_port))
+                                s.sendall(ack_bytes)
+                                s.shutdown(socket.SHUT_WR)
+
+                            LOGGER.info("SENT ACKNOWLEDGEMENT %s to %s", ack_message, worker_key)
+
+
+
+                        elif msg_type == "new_manager_job":
                             job_id = self.next_job_id
                             self.next_job_id += 1
 
-                            input_directory = message_data["input_directory"]
-                            output_directory = message_data["output_directory"]
-                            mapper_executable = message_data["mapper_executable"]
-                            reducer_executable = message_data["reducer_executable"]
-                            num_mappers = message_data["num_mappers"]
-                            num_reducers = message_data["num_reducers"]
-
                             job = Job(
                                 job_id,
-                                mapper_executable,
-                                reducer_executable,
-                                output_directory,
-                                num_mappers,
-                                num_reducers,
+                                message_data["mapper_executable"],
+                                message_data["reducer_executable"],
+                                message_data["output_directory"],
+                                message_data["num_mappers"],
+                                message_data["num_reducers"],
                             )
+                            self.job_queue.append((job, message_data["input_directory"], message_data["num_mappers"]))
+                            LOGGER.info(f"Received job {job_id} and queued it.")
 
-                            LOGGER.info(f"Received new job request. Assigned job_id={job_id}")
-                            LOGGER.info(f"JOB OUTPUT DIRECTORY: {output_directory}")
-                            self.job_queue.append((job, input_directory, num_mappers))
+                        elif msg_type == "finished":
+                            self.handle_worker_message(message_raw.decode())
 
-                        elif message_data.get("message_type") == "finished":
-                            LOGGER.info(f"Received 'finished' message: {message_data}")
-                            self.handle_worker_message(message)
-
-                except Exception as e:
-                    import traceback
-                    LOGGER.error("Error in TCP command listener:\n%s", traceback.format_exc())
+                except Exception:
+                    LOGGER.exception("Error in TCP command listener")
 
 
     # ------------------------------- Mapping Phase Functions -------------------------------
@@ -484,19 +484,19 @@ class Manager:
             while not self.shutdown_event.is_set():
                 try:
                     LOGGER.info(f"Before receiving heartbeat call")
+                    # print("DEBUG: mock_sendall __self__ =", id(mock_sendall.__self__))
                     recv_result = udp_socket.recv(4096)
                     LOGGER.info(f"\n \n \n RECV recvfrom result: {recv_result}")
                     strng = recv_result.decode("utf-8")
                     dict = json.loads(strng)
                     LOGGER.info(f"\n \n \n HERE OFFICE HOURS HERE recvfrom result: {dict}")
-                    # message, addr = udp_socket.recvfrom(1024)
+
                     # LOGGER.info(f"Received message: {message} from address: {addr}")
-                    break
-                    if not message or not addr:
+                    # break
+                    if not dict:
                         LOGGER.warning("Received empty message or address from UDP socket")
                         continue  # Skip empty messages
-                    heartbeat_data = json.loads(message.decode())
-                    self.process_heartbeat(heartbeat_data, addr)
+                    self.process_heartbeat(dict)
                 except socket.timeout:
                     LOGGER.error(f"TIMEOUT")
                     continue
@@ -509,7 +509,7 @@ class Manager:
                     LOGGER.error(f"Error while processing heartbeat: {e}", exc_info=True)
                     break
 
-    def process_heartbeat(self, heartbeat_data, addr):
+    def process_heartbeat(self, heartbeat_data):
         """ Process heartbeats from workers, marking them as alive or dead. """
         worker_host = heartbeat_data['worker_host']
         worker_port = heartbeat_data['worker_port']
