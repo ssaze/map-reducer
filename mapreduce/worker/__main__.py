@@ -21,17 +21,15 @@ class Worker:
         LOGGER.info("Initializing Worker...")
 
 
+        # Start listener and serve tasks
+        self.start_listener_and_serve(host, port)
+
+
         self.host = host
         self.port = port
         self.manager_host = manager_host
         self.manager_port = manager_port
 
-        
-        # Step 1: Create listener socket for task messages from Manager
-        self.listener_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.listener_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.listener_socket.bind((host, port))
-        self.listener_socket.listen()
 
 
 
@@ -75,13 +73,24 @@ class Worker:
                 # Now start listening for tasks immediately
         try:
             self.listen_for_tasks()
-        except SystemExit:
+        finally:
             self.shutdown()
+
 
         # ✅ Ensure clean shutdown (for test assertions)
         if hasattr(self, 'heartbeat_thread') and self.heartbeat_thread.is_alive():
             self.heartbeat_thread.join(timeout=2)   
 
+    def start_listener_and_serve(self, host, port):
+        """Create listener socket using a context manager and start serving tasks."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind((host, port))
+            listener.listen()
+            self.listener_socket = listener  # Save it so shutdown can access
+
+            LOGGER.info(f"Listener socket created and bound to {host}:{port}")
+            self.listen_for_tasks()
 
 
     def send_message(self, conn, message_dict):
@@ -107,7 +116,8 @@ class Worker:
         """Send heartbeat messages to the Manager every 10 seconds."""
         while not self.heartbeat_shutdown_event.is_set():
 
-            time.sleep(10)  # Send heartbeat every 10 seconds
+            if self.heartbeat_shutdown_event.wait(timeout=10):
+                break  # Send heartbeat every 10 seconds
 
             # Create the heartbeat message
             heartbeat_message = {
@@ -158,8 +168,9 @@ class Worker:
                 # Receive the task message
                 message_raw = conn.recv(4096)
                 if not message_raw:
-                    LOGGER.warning("No message received, continuing to listen.")
-                    continue  # Keep the loop alive even if no message was received
+                    LOGGER.warning("No message received, assuming shutdown. THIS MIGHT BE WRONG.")
+                    self.shutdown()
+                    return  
 
                 try:
                     task_message = json.loads(message_raw.decode('utf-8'))
@@ -235,9 +246,15 @@ class Worker:
             self.heartbeat_shutdown_event.set()
 
         if hasattr(self, 'heartbeat_thread'):
-            self.heartbeat_thread.join(timeout=2)  # Wait for heartbeat thread to finish
+            self.heartbeat_shutdown_event.set()
+            self.heartbeat_thread.join(timeout=2)
+
         
         if hasattr(self, 'listener_socket'):
+            try:
+                self.listener_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass  # already closed or in a test environment
             self.listener_socket.close()
 
         LOGGER.info("Worker shutdown complete.")
