@@ -141,8 +141,11 @@ class Worker:
 
         if message_type == "new_map_task":
             task_id = task_message["task_id"]
+            num_partitions = task_message["num_partitions"]
+            output_directory = task_message["output_directory"]
+            
             for input_file in task_message["input_paths"]:
-                self.run_map_task(conn, task_id, input_file, num_partitions, output_directory, map_executable)
+                self.run_map_task(conn, task_id, input_file, num_partitions, output_directory)
             num_partitions = task_message["num_partitions"]
             output_directory = task_message["output_directory"]
             self.run_map_task(task_id, conn, input_file, num_partitions, output_directory)
