@@ -19,23 +19,17 @@ class Worker:
     def __init__(self, host, port, manager_host, manager_port):
         """Construct a Worker instance and start listening for messages."""
         LOGGER.info("Initializing Worker...")
-
-
-        # Start listener and serve tasks
-        self.start_listener_and_serve(host, port)
-
-
         self.host = host
         self.port = port
         self.manager_host = manager_host
         self.manager_port = manager_port
 
+        # BELOW NEEDED FOR SHUTDOWN
+        self.listener_socket = None
+        self.listener_thread = None
+        self.heartbeat_thread = None
 
-
-
-        LOGGER.info(f"Listener socket created and bound to {host}:{port}")
-
-        # Step 2: Register with Manager via TCP
+        # Step 1: register first
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.connect((manager_host, manager_port))
 
@@ -46,7 +40,10 @@ class Worker:
             }
             sock.sendall(json.dumps(register_message).encode("utf-8"))
 
-            response_raw = sock.recv(4096)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as recv_sock:
+            recv_sock.connect((self.manager_host, self.manager_port))
+
+            response_raw = recv_sock.recv(4096)
             decoded = response_raw.decode('utf-8')
 
             # 👇 Handle MagicMock from test environment
@@ -56,7 +53,6 @@ class Worker:
                 response_message = {"message_type": "register_ack"}  # or something safe
             else:
                 response_message = json.loads(decoded)
-
 
             if response_message.get("message_type") == "register_ack":
                 print("Registration successful!")
@@ -69,15 +65,14 @@ class Worker:
         LOGGER.debug("TCP recv\n%s", json.dumps(response_message, indent=2))
 
         # Now start listening for tasks immediately
-                # Now start listening for tasks immediately
-                # Now start listening for tasks immediately
-        try:
-            self.listen_for_tasks()
-        finally:
-            self.shutdown()
+        self.start_listener_and_serve(host, port)
+        LOGGER.info(f"Listener socket created and bound to {host}:{port}")
+
+        self.shutdown()
 
 
         # ✅ Ensure clean shutdown (for test assertions)
+        # TODO FIX
         if hasattr(self, 'heartbeat_thread') and self.heartbeat_thread.is_alive():
             self.heartbeat_thread.join(timeout=2)   
 
@@ -87,10 +82,11 @@ class Worker:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind((host, port))
             listener.listen()
+            listener.settimeout(1)
             self.listener_socket = listener  # Save it so shutdown can access
-
-            LOGGER.info(f"Listener socket created and bound to {host}:{port}")
-            self.listen_for_tasks()
+            self.listener_thread = threading.Thread(target=self.listen_for_tasks, daemon=True)
+            self.listener_thread.start()
+            LOGGER.info(f"Listening on {host}:{port}")
 
 
     def send_message(self, conn, message_dict):
@@ -128,6 +124,7 @@ class Worker:
 
             try:
                 # Send the heartbeat message to the Manager (using the same connection)
+                # TODO CHECK TCP
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                     sock.connect((self.manager_host, self.manager_port))
                     sock.sendall(json.dumps(heartbeat_message).encode("utf-8"))
@@ -236,7 +233,8 @@ class Worker:
         message_dict = {
             "message_type": "finished",
             "task_id": task_id,
-            "worker": [self.host, self.port],
+            "worker_host": self.host,
+            "worker_port": self.port
         }
         self.send_message(conn, message_dict)
 
@@ -275,7 +273,7 @@ class Worker:
 @click.option("--host", "host", default="localhost")
 @click.option("--port", "port", default=6001)
 @click.option("--manager-host", "manager_host", default="localhost")
-@click.option("--manager-port", "manager_port", default=6000)
+@click.option("--manager-port", "manager_port", default=8001)
 @click.option("--logfile", "logfile", default=None)
 @click.option("--loglevel", "loglevel", default="info")
 def main(host, port, manager_host, manager_port, logfile, loglevel):
