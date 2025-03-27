@@ -355,7 +355,10 @@ class Manager:
             # Wait for job to complete
             with self.job.condition:
                 while not self.job.is_complete():
-                    self.job.condition.wait()
+                    self.job.condition.wait(timeout=1)  # <- add this timeout
+                    if self.shutdown_event.is_set():
+                        LOGGER.warning("Job queue thread exiting due to shutdown.")
+                        return
 
             LOGGER.info(f"Job {job_id} complete")
 
@@ -514,8 +517,6 @@ class Manager:
         worker_host = heartbeat_data['worker_host']
         worker_port = heartbeat_data['worker_port']
         worker_key = (worker_host, worker_port)
-
-        LOGGER.info(f"Received heartbeat from {worker_key}")
 
         with self.job.lock:
             # Reset missed heartbeats counter for the worker
