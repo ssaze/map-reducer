@@ -19,6 +19,8 @@ class Worker:
     def __init__(self, host, port, manager_host, manager_port):
         """Construct a Worker instance and start listening for messages."""
         LOGGER.info("Initializing Worker...")
+        self.shutdown_event = threading.Event()
+        
         self.host = host
         self.port = port
         self.manager_host = manager_host
@@ -68,7 +70,10 @@ class Worker:
         self.start_listener_and_serve(host, port)
         LOGGER.info(f"Listener socket created and bound to {host}:{port}")
 
-        self.shutdown()
+        self.listener_thread.join()
+        self.heartbeat_thread.join()
+        self.handle_tasks.join();
+
 
 
         # ✅ Ensure clean shutdown (for test assertions)
@@ -153,44 +158,107 @@ class Worker:
             LOGGER.warning(f"Unknown task type: {message_type}")
 
     def listen_for_tasks(self):
-        """Listen for incoming task messages from the Manager."""
-        while True:
-            try:
-                conn, addr = self.listener_socket.accept()
-            except ValueError:
-                import logging
-                logging.warning("Mocked socket.accept() returned incomplete data.")
-                break  # exit loop in test
+        # """Listen for incoming task messages from the Manager."""
+        # while True:
+        #     try:
+        #         conn, addr = self.listener_socket.accept()
+        #     except ValueError:
+        #         import logging
+        #         logging.warning("Mocked socket.accept() returned incomplete data.")
+        #         break  # exit loop in test
 
-            with conn:
-                LOGGER.info(f"Connected to Manager at {addr}")
+        #     with conn:
+        #         LOGGER.info(f"Connected to Manager at {addr}")
 
-                # Receive the task message
-                message_raw = conn.recv(4096)
-                if not message_raw:
-                    LOGGER.warning("No message received, assuming shutdown. THIS MIGHT BE WRONG.")
-                    self.shutdown()
-                    return  
+        #         # Receive the task message
+        #         message_raw = conn.recv(4096)
+        #         if not message_raw:
+        #             LOGGER.warning("No message received, assuming shutdown. THIS MIGHT BE WRONG.")
+        #             self.shutdown()
+        #             return  
+
+        #         try:
+        #             task_message = json.loads(message_raw.decode('utf-8'))
+        #             LOGGER.info(f"Received task message: {task_message}")
+
+        #             if task_message.get("message_type") == "shutdown":
+        #                 self.shutdown()
+        #                 return
+
+        #             self.handle_task(conn, task_message)
+        #         except json.JSONDecodeError:
+        #             LOGGER.error("Failed to decode message.")
+        #             continue
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+
+            
+            # Bind the socket to the server
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("localhost", 8000))
+            sock.listen()
+
+            # Socket accept() will block for a maximum of 1 second.  If you
+            # omit this, it blocks indefinitely, waiting for a connection.
+            sock.settimeout(1)
+
+            
+            while not self.shutdown_event.is_set():
+                # Wait for a connection for 1s.  The socket library avoids consuming
+                # CPU while waiting for a connection.
+                try:
+                    clientsocket, address = sock.accept()
+                except socket.timeout:
+                    continue
+                print("Connection from", address[0])
+
+                # Socket recv() will block for a maximum of 1 second.  If you omit
+                # this, it blocks indefinitely, waiting for packets.
+                clientsocket.settimeout(1)
+
+                # Receive data, one chunk at a time.  If recv() times out before we
+                # can read a chunk, then go back to the top of the loop and try
+                # again.  When the client closes the connection, recv() returns
+                # empty data, which breaks out of the loop.  We make a simplifying
+                # assumption that the client will always cleanly close the
+                # connection.
+                with clientsocket:
+                    message_chunks = []
+                    while not self.shutdown_event.is_set():
+                        try:
+                            data = clientsocket.recv(4096)
+                        except socket.timeout:
+                            continue
+                        if not data:
+                            break
+                        message_chunks.append(data)
+
+                # Decode list-of-byte-strings to UTF8 and parse JSON data
+                message_bytes = b''.join(message_chunks)
+                message_str = message_bytes.decode("utf-8")
 
                 try:
-                    task_message = json.loads(message_raw.decode('utf-8'))
-                    LOGGER.info(f"Received task message: {task_message}")
-
-                    if task_message.get("message_type") == "shutdown":
-                        self.shutdown()
-                        return
-
-                    self.handle_task(conn, task_message)
+                    message_dict = json.loads(message_str)
                 except json.JSONDecodeError:
-                    LOGGER.error("Failed to decode message.")
                     continue
+
+                print(message_dict)
+
+                if message_dict["message_type"] == "shutdown":
+                    self.shutdown();
+                else:
+                    self.handle_tasks = threading.Thread(target=self.handle_task, args=(message_dict) ,daemon=True)
+
+                
 
     def run_map_task(self, conn, task_id, input_file, num_partitions, output_directory):
         """Execute the map task on the Worker."""
         with tempfile.TemporaryDirectory(prefix=f"mapreduce-local-task{task_id:05d}-") as tmpdir:
             # Run the map executable
             map_executable = 'map'  # Assuming 'map' is the map executable
+            LOGGER.info(f"Going to partition")
             self.partition_map_output(task_id, input_file, map_executable, num_partitions, tmpdir)
+            LOGGER.info(f"Finished partitioning map input")
             self.sort_and_move_files(tmpdir, output_directory)
 
             # Notify Manager that the task is finished
@@ -259,6 +327,7 @@ class Worker:
             self.listener_socket.close()
 
         LOGGER.info("Worker shutdown complete.")
+
     
     def cleanup(self):
         self.shutdown_event.set()
