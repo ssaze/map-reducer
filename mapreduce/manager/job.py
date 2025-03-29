@@ -2,6 +2,7 @@ import threading
 from collections import deque
 from enum import Enum
 import logging
+import json
 
 class JobPhase(Enum):
     """Enumeration for the job phase."""
@@ -37,13 +38,16 @@ class Job:
 
     def add_task(self, task):
         """Add a new task to the pending queue."""
-        # self.job.add_task(json.dumps(task_message))
-        # tasks are json
-        with self.lock:
+        # tasks are dict
+        with self.lock:  
             self.tasks.append(task)
-            task_id = task[task_id]
-            self.task_reference_dict[task_id] = task
-            LOGGER.info("ADDED TASK {task} WITH ID {task_id}")
+            task_id = task["task_id"]
+
+            if task_id not in self.task_reference_dict:
+                self.task_reference_dict[task_id] = task
+            else:
+                LOGGER.warning(f"Task {task_id} already exists in task_reference_dict. What the fuck happened")
+
         with self.condition:
             self.condition.notify_all() # NOTIFY NEW TASK
 
@@ -51,7 +55,7 @@ class Job:
         """Retrieve the next task for assignment, if available."""
         with self.lock:
             if self.tasks:
-                return self.tasks.popleft()
+                return self.tasks[0]
             return None
 
     def assign_task(self, task_id, worker):
@@ -65,6 +69,7 @@ class Job:
                 return False
             LOGGER.info(f"TASK {task_id} HAS BEEN ASSIGNED TO {worker}")
             self.in_progress_tasks[task_id] = worker
+            self.tasks.popleft()
             return True
 
     def task_finished(self, task_id):
@@ -77,23 +82,25 @@ class Job:
 
             # Check if we transition to reducing phase
             if self.phase == JobPhase.MAPPING and not self.tasks and not self.in_progress_tasks:
-                LOGGER.info(f"MOVING TO REDUCING")
-                self.phase = JobPhase.REDUCING
-                self.mapping_finished_notif.notify_all()
+                with self.condition:
+                    LOGGER.info(f"MOVING TO REDUCING")
+                    self.phase = JobPhase.REDUCING
+                    self.mapping_finished_notif.notify_all()
 
             # Check if we are fully done
             if self.phase == JobPhase.REDUCING and not self.tasks and not self.in_progress_tasks:
-                LOGGER.info(f"JOB COMPLETE")
-                self.phase = JobPhase.DONE
-                self.reducing_finished_notif.notify_all()
+                with self.condition:
+                    LOGGER.info(f"JOB COMPLETE")
+                    self.phase = JobPhase.DONE
+                    self.reducing_finished_notif.notify_all()
 
-    def reset_task(self, task_id):
+    def reset_task(self, task):
         """Re-enqueue a task if its worker failed and notify waiting threads."""
         with self.condition:
+            task_id = task["task_id"]
             if task_id in self.in_progress_tasks:
                 del self.in_progress_tasks[task_id]
-                self.tasks.appendleft(task_id)  # Re-add to front
-                self.condition.notify_all() # new task alert
+                self.tasks.append(task_id)  # Re-add
             else:
                 LOGGER.info("SOMETHING WRONG AFTER WORKER DEATH REASSIGNMENT")
 

@@ -56,13 +56,13 @@ def tcp_server(host, port, shutdown_event):
                 continue
             print(message_dict)
 
-def tcp_client(host, server_port, message_json):
+def tcp_client(host, port, message_json):
     """Test TCP Socket Client."""
     # create an INET, STREAMing socket, this is TCP
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
 
         # connect to the server
-        sock.connect((host, server_port))
+        sock.connect((host, port))
 
         # send a message
         message = json.dumps(message_json)
