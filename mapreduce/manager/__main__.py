@@ -34,20 +34,22 @@ class Manager:
         self.worker_heartbeats = {}
         self.dead_workers = set()
         self.job = None
-        self.threads = []
+
         self.shutdown_event = threading.Event()
         self.worker_condition = threading.Condition()
 
         self.job_queue = deque()
         self.next_job_id = 0
 
-        # Create temporary directory for shared map/reduce files
 
+        # Create temporary directory for shared map/reduce files
         self.tmpdir_obj = tempfile.TemporaryDirectory(prefix="mapreduce-shared-")
         self.tmpdir = self.tmpdir_obj.name
-
         LOGGER.info("Created tmpdir %s", self.tmpdir)
 
+        self.threads = []
+
+        # JOB QUEUE THREAD HANDLE_JOB_QUEUE
         job_thread = threading.Thread(target=self.handle_job_queue, daemon=True)
         job_thread.start()
         self.threads.append(job_thread)
@@ -79,7 +81,7 @@ class Manager:
     # ------------------------------- Job Creation and Initialization -------------------------------
     def create_job(self, job_id, mapper_executable, reducer_executable, output_directory, num_mappers, num_reducers):
         """Create and start a new MapReduce job."""
-        LOGGER.info("JOB GOING HERE 2")
+        LOGGER.info("JOB CREATED")
         self.job = Job(
             job_id,
             mapper_executable,
@@ -88,7 +90,6 @@ class Manager:
             num_mappers,
             num_reducers,
         )
-        LOGGER.info(f"Job {self.job.job_id} created, starting mapping phase.")
 
     def get_available_worker(self):
         """ Get the next available worker. """
@@ -100,29 +101,6 @@ class Manager:
         LOGGER.info("No available workers.")
         return None  # All workers are dead
     # ------------------------------- General Task Management -------------------------------
-    def assign_task_to_worker(self, worker, task):
-        """ Assign a single task to an available worker. """
-        LOGGER.info(f"Attempting to assign task {task} to worker {worker}.")
-        with self.job.lock:
-            if worker not in self.busy_workers:
-                self.busy_workers.add(worker)
-
-                task_message = task["task_message"]
-                # If task_message is still a string, parse it
-                if isinstance(task_message, str):
-                    task_message = json.loads(task_message)
-                    task["task_message"] = task_message  # update with parsed version
-
-                task_id = task_message["task_id"]
-
-                if self.job.assign_task(task_id, worker):
-                    self.send_task_to_worker(worker, task)
-                    LOGGER.info(f"Task {task_id} assigned to worker {worker}.")
-                    return True
-
-        LOGGER.warning(f"Failed to assign task to worker {worker}: worker is busy or dead.")
-        return False
-
     def send_task_to_worker(self, worker, task):
         """ Send the task to the worker via TCP. """
         worker_host, worker_port = worker
@@ -161,14 +139,6 @@ class Manager:
 
         with self.job.condition:
             self.job.condition.notify_all()
-
-    def assign_task_to_next_worker(self, task):
-        """ Assign task to the next available worker. """
-        available_worker = self.get_available_worker()
-        if available_worker:
-            task.assigned_worker = available_worker
-            self.send_task_to_worker(available_worker, task)
-            LOGGER.info(f"Assigned task {task} to next available worker {available_worker}.")
     
     def handle_worker_message(self, message):
         """!!! Processes TASK COMPLETION !!!"""
@@ -199,8 +169,6 @@ class Manager:
                 # Notify any waiting threads that job state has changed
                 with self.job.condition:
                     self.job.condition.notify_all()  # Wake up waiting threads
-
-
     # ------------------------------- Worker Register and Shutdown and Listening Commands -------------------------------
     def forward_shutdown_to_workers(self):
         """Send shutdown message to all registered workers."""
@@ -214,7 +182,6 @@ class Manager:
                     LOGGER.info(f"Sent shutdown message to worker {worker_host}:{worker_port}")
             except Exception as e:
                 LOGGER.warning(f"Failed to send shutdown to worker {worker_host}:{worker_port}: {e}")
-
 
     def listen_for_commands(self):
         """Main TCP server to receive shutdown and register commands."""
@@ -294,36 +261,13 @@ class Manager:
 
                 except Exception:
                     LOGGER.exception("Error in TCP command listener")
-
-
     # ------------------------------- Mapping Phase Functions -------------------------------
-    def partition_input_files(self, input_files, num_mappers):
-        """
-        Partitions sorted input files using round-robin assignment into num_mappers partitions.
-        
-        param input_files: list of input file names
-        num_mappers: number of mapper workers available
-        return a list of partitions
-        """
-        LOGGER.debug("Partitioning input files.")
-        input_files.sort()  # sort by name
-        partitions = [[] for _ in range(num_mappers)]  # Create empty lists for each mapper
-
-        for idx, file in enumerate(input_files):
-            partitions[idx % num_mappers].append(file)  # round robin assignment
-        LOGGER.debug(f"Partitioned input files: {partitions}")
-        return partitions
-
     def handle_job_queue(self):
         while not self.shutdown_event.is_set():
             if not self.job_queue:
                 LOGGER.debug("Job queue is empty. Waiting for new job.")
                 time.sleep(1)
                 continue
-
-            if self.shutdown_event.is_set():
-                break
-
 
             # Get next job
             job, input_dir, num_mappers = self.job_queue.popleft()
@@ -348,8 +292,7 @@ class Manager:
             # TODO CHECK
             # Step 3: Set and run Job
             self.job = job
-            input_files = sorted(Path(input_dir).glob("*"))
-            input_paths = [str(p) for p in input_files]
+
             self.start_mapping(input_paths)
 
             # Wait for job to complete
@@ -361,8 +304,6 @@ class Manager:
                         return
 
             LOGGER.info(f"Job {job_id} complete")
-
-
 
     def start_mapping(self, input_files):
         """Start the mapping phase with fault tolerance."""
@@ -393,7 +334,7 @@ class Manager:
 
                     worker = self.get_available_worker()
                     if worker:
-                        task_data = self.job.next_task()
+                        task_data = self.job.get_task()
                         if task_data:
                             task_id = json.loads(task_data)["task_id"]
                             if self.job.assign_task(task_id, worker):
