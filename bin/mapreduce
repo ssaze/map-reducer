@@ -1,75 +1,103 @@
 #!/bin/bash
 
+set -Eeuo pipefail
+
 LOG_DIR="var/log"
 MANAGER_LOG="$LOG_DIR/manager.log"
 WORKER1_LOG="$LOG_DIR/worker-6001.log"
 WORKER2_LOG="$LOG_DIR/worker-6002.log"
 
-start_server() {
-    if pgrep -f mapreduce-manager > /dev/null || pgrep -f mapreduce-worker > /dev/null; then
-        echo "Error: mapreduce-manager is already running"
-        exit 1
-    fi
 
-    echo "starting mapreduce ..."
-    mkdir -p "$LOG_DIR"
-    rm -f "$MANAGER_LOG" "$WORKER1_LOG" "$WORKER2_LOG"
-
-    mapreduce-manager --host localhost --port 6000 --logfile "$MANAGER_LOG" &
-    sleep 2  # allow manager to start
-    mapreduce-worker --host localhost --port 6001 --manager-host localhost --manager-port 6000 --logfile "$WORKER1_LOG" &
-    mapreduce-worker --host localhost --port 6002 --manager-host localhost --manager-port 6000 --logfile "$WORKER2_LOG" &
-}
-
-stop_server() {
-    echo "stopping mapreduce ..."
-    mapreduce-submit --shutdown --host localhost --port 6000 || true
-    sleep 2
+check_status() {
+    local manager=0
+    local worker=0
 
     if pgrep -f mapreduce-manager > /dev/null; then
-        echo "killing mapreduce manager ..."
-        pkill -f mapreduce-manager || true
+        manager=1
     fi
 
     if pgrep -f mapreduce-worker > /dev/null; then
-        echo "killing mapreduce worker ..."
-        pkill -f mapreduce-worker || true
+        worker=1
+    fi
+    echo $status
+}
+
+
+
+start_server() {
+    
+    local status
+    status=$(check_status)
+
+    if [ "$status" -ne 0 ]; then
+        echo "Error: Some components are already running."
+        exit 1
+    fi
+
+    mkdir -p var/log
+    rm -f var/log/manager.log var/log/worker-6002.log var/log/worker-6001.log
+    mapreduce-manager --host localhost --port 6000 --logfile var/log/manager.log &
+    sleep 2  # give the Manager time to start
+    mapreduce-worker --host localhost --port 6001 --manager-host localhost --manager-port 6000 --logfile var/log/worker-6001.log &
+    mapreduce-worker --host localhost --port 6002 --manager-host localhost --manager-port 6000 --logfile var/log/worker-6002.log &
+}
+
+stop_server() {
+    mapreduce-submit --shutdown --host localhost --port 6000
+    sleep 2  # give the Manager time to receive signal and send to Workers
+
+    if pgrep -f mapreduce-manager &> /dev/null; then
+    echo "killing mapreduce manager ..."
+    pkill -f mapreduce-manager || true
+    fi
+    if pgrep -f mapreduce-worker &> /dev/null; then
+    echo "killing mapreduce worker ..."
+    pkill -f mapreduce-worker || true
     fi
 }
 
 status_server() {
+    manager_running=0
+    worker_running=0
+
     if pgrep -f mapreduce-manager > /dev/null; then
         echo "manager running"
+        manager_running=1
     else
         echo "manager not running"
     fi
 
     if pgrep -f mapreduce-worker > /dev/null; then
-        echo "workers running"
+        echo "worker running"
+        worker_running=1
     else
-        echo "workers not running"
+        echo "worker not running"
     fi
 
-    # Exit 0 only if both manager and worker(s) are running
-    if pgrep -f mapreduce-manager > /dev/null && pgrep -f mapreduce-worker > /dev/null; then
+    # Exit with 0 if both are running, else 1
+    if [ $manager_running -eq 1 ] && [ $worker_running -eq 1 ]; then
         exit 0
     else
         exit 1
     fi
 }
 
+
 restart_server() {
     stop_server
     start_server
 }
 
-case "$1" in
-    start) start_server ;;
-    stop) stop_server ;;
-    status) status_server ;;
-    restart) restart_server ;;
-    *)
-        echo "Usage: $0 {start|stop|status|restart}"
-        exit 1
-        ;;
-esac
+
+if [ $1 == "start" ]; then
+    server_start
+elif [ $1 == "stop" ]; then
+    server_stop
+elif [ $1 == "status" ]; then
+    server_status
+elif [ $1 == "restart" ]; then
+    server_stop
+    server_start
+else
+    exit 1
+fi
