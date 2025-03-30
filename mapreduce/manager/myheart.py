@@ -63,7 +63,7 @@ def check_heartbeats(self):
             if current_time - last_heartbeat > 10:
                 LOGGER.warning(f"Worker {worker} has missed {5} heartbeats and is assumed dead.")
                 handle_dead_worker(self, worker)
-        time.sleep(1)
+        time.sleep(2)
 
 def handle_dead_worker(self, worker):
     # marking dead
