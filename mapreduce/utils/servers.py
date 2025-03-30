@@ -7,6 +7,15 @@ from enum import Enum
 import socket
 import json
 
+def tcp_connect(host, port, mesg):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.connect((host, port))
+                sock.sendall(mesg.encode('utf-8'))
+                return True
+            except ConnectionRefusedError:
+                return False
+
 def tcp_server(host, port, shutdown_event):
     """Test TCP Socket Server."""
     # Create an INET, STREAMing socket, this is TCP
@@ -72,12 +81,3 @@ def tcp_client(host, server_port, message_json):
         message = json.dumps(message_json)
         sock.sendall(message.encode('utf-8'))
 
-
-def tcp_connect(host, port, mesg):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            try:
-                sock.connect((host, port))
-                sock.sendall(mesg.encode('utf-8'))
-                return True
-            except ConnectionRefusedError:
-                return False
