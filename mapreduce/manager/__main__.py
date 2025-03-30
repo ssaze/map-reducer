@@ -17,27 +17,12 @@ from mapreduce.utils.servers import tcp_client
 LOGGER = logging.getLogger(__name__)
 
 
-class WorkerRegistry:
-    def __init__(self):
-        self.workers = OrderedDict()
-        self.busy_workers = OrderedDict()
-        self.worker_heartbeats = ThreadSafeOrderedDict()
-        self.dead_workers = set()
-
-class JobQueueManager:
-    def __init__(self):
-        self.job = None
-        self.job_queue = deque()
-        self.next_job_id = 0
-        self.new_job_alert_condition = threading.Condition()
-
-
 class Manager:
     """Represent a MapReduce framework Manager node."""
 
     def __init__(self, host, port):
         """Initialize Manager."""
-        
+
         self.host = host
         self.port = port
         self.job = None
@@ -122,19 +107,18 @@ class Manager:
             worker = (worker_host, worker_port)
             if worker in self.dead_workers:
                 continue
-            try:
-                if tcp_client(worker_host, worker_port, message):
-                    LOGGER.info(
-                        f"Sent shutdown to worker {worker_host}:{worker_port}"
-                    )
-                else:
-                    LOGGER.info(
-                        f"tcp fail sd msg to wrkr {worker_host}:{worker_port}"
-                    )
-            except Exception as e:
-                LOGGER.warning(
-                    f"failed send sd to wrkr {worker_host}:{worker_port}: {e}"
-                )
+            tcp_client(worker_host, worker_port, message)
+                # LOGGER.info(
+                #     f"Sent shutdown to worker {worker_host}:{worker_port}"
+                # )
+                # else:
+                #     LOGGER.info(
+                #         f"tcp fail sd msg to wrkr {worker_host}:{worker_port}"
+                #     )
+            # except Exception as e:
+            #     LOGGER.warning(
+            #         f"failed send sd to wrkr {worker_host}:{worker_port}: {e}"
+            #     )
 
     def cleanup(self):
         """Cleanup resources on shutdown."""
