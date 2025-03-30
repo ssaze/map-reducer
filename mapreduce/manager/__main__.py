@@ -230,7 +230,6 @@ def input_partitioning(input_dir, num_mappers):
     """Return a list of partitions."""
     LOGGER.info("Partitioning input files.")
     input_files = sorted(Path(input_dir).glob("*"))
-    input_files.sort()  # Sort by name
     partitions = [[] for _ in range(num_mappers)]
 
     for idx, file in enumerate(input_files):

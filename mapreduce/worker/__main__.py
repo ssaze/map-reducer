@@ -88,30 +88,32 @@ class Worker:
     ):
         """Create partitioned intermediate files for map output."""
         file_handles = [None] * num_partitions
-        for input_path in input_files:
-            with open(input_path, encoding="utf-8") as infile:
-                with subprocess.Popen(
-                    [executable],
-                    stdin=infile,
-                    stdout=subprocess.PIPE,
-                    text=True,
-                ) as map_process:
-                    for line in map_process.stdout:
-                        if "\t" not in line:
-                            continue
-                        key, _ = line.split("\t", 1)
-                        partition_id = self.partition(key, num_partitions)
 
-                        if file_handles[partition_id] is None:
-                            filename = (
-                                f"maptask{task_id:05d}-part{partition_id:05d}"
-                            )
-                            filepath = os.path.join(temp_dir, filename)
-                            file_handles[partition_id] = open(
-                                filepath, "w+", encoding="utf-8"
-                            )
+        with ExitStack() as stack:
+            for input_path in input_files:
+                with open(input_path, encoding="utf-8") as infile:
+                    with subprocess.Popen(
+                        [executable],
+                        stdin=infile,
+                        stdout=subprocess.PIPE,
+                        text=True,
+                    ) as map_process:
+                        for line in map_process.stdout:
+                            if "\t" not in line:
+                                continue
+                            key = line.split("\t", 1)[0]
+                            pid = self.partition(key, num_partitions)
 
-                        file_handles[partition_id].write(line)
+                            if file_handles[pid] is None:
+                                filepath = os.path.join(
+                                    temp_dir,
+                                    f"maptask{task_id:05d}-part{pid:05d}"
+                                )
+                                file_handles[pid] = stack.enter_context(
+                                    open(filepath, "w+", encoding="utf-8")
+                                )
+
+                            file_handles[pid].write(line)
 
         return file_handles
 
@@ -161,7 +163,9 @@ class Worker:
                             reduce_process.stdin.write(line)
 
             # Copy to output directory after closing files
-            shutil.copytree(tmpdir, dictionary['output_directory'], dirs_exist_ok=True)
+            shutil.copytree(
+                tmpdir, dictionary['output_directory'], dirs_exist_ok=True
+                )
 
     def notify_finished(self, task_id):
         """Send a completion message to the manager for a finished task."""
