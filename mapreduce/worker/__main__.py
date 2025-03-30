@@ -11,11 +11,9 @@ import pathlib
 import shutil
 import threading
 import heapq
-import socket
 import click
 import sys
 from mapreduce.utils.servers import *
-#If something is failing its logfile and loglevel in worker overview
 
 
 # Configure logging
@@ -23,6 +21,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class Worker:
+    """Docstring."""
 
     def __init__(self, host, port, manager_host, manager_port):
         """Init."""
@@ -36,11 +35,12 @@ class Worker:
         self.shutdown = threading.Event()
         self.alive_threads = []
 
-        LOGGER.info("Starting worker host=%s port=%s pwd=%s", host, port, os.getcwd())
-        LOGGER.info("manager_host=%s manager_port=%s", manager_host, manager_port)
+        # LOGGER.info("Starting worker host=%s
+        # port=%s pwd=%s", host, port, os.getcwd())
+        # LOGGER.info("manager_host=%s manager_port=%s",
+        # manager_host, manager_port)
 
         # Launch TCP listener in a separate thread
-        #i abstracted this because i personally think it makes the code more readable
         self._start_tcp_thread()
 
         # Send registration message to the manager
@@ -49,12 +49,10 @@ class Worker:
         # Wait for all threads to finish
         self._wait_for_threads()
 
-
     def _start_tcp_thread(self):
-        thread = threading.Thread(target=self.startTCP,daemon=True)
+        thread = threading.Thread(target=self.startTCP)
         self.alive_threads.append(thread)
         thread.start()
-
 
     def _send_registration(self):
         registration_msg = json.dumps({
@@ -64,21 +62,19 @@ class Worker:
         })
         tcp_connect(self.manager_host, self.manager_port, registration_msg)
 
-
     def _wait_for_threads(self):
         for thread in self.alive_threads:
             thread.join()
 
-
     def partition(self, key, num_partitions):
-        import hashlib
+        """Docstring."""
         hexdigest = hashlib.md5(key.encode("utf-8")).hexdigest()
         keyhash = int(hexdigest, base=16)
         partition_number = keyhash % num_partitions
         return partition_number
 
-    
     def handle_map_task(self, task_info):
+        """Docstring."""
         task_id = task_info["task_id"]
         input_files = task_info["input_paths"]
         executable = task_info["executable"]
@@ -105,9 +101,11 @@ class Worker:
                             partition_id = self.partition(key, num_partitions)
 
                             if file_handles[partition_id] is None:
-                                filename = f"maptask{task_id:05d}-part{partition_id:05d}"
+                                filename = f"maptask{task_id:05d}-part{
+                                    partition_id:05d}"
                                 filepath = os.path.join(temp_dir, filename)
-                                file_handles[partition_id] = open(filepath, "w+")
+                                file_handles[partition_id] = open(filepath,
+                                                                  "w+")
 
                             file_handles[partition_id].write(line)
 
@@ -116,27 +114,36 @@ class Worker:
                 if handle:
                     handle_path = handle.name
                     handle.close()
-                    subprocess.run(["sort", "-o", handle_path, handle_path], check=True)
+                    subprocess.run(["sort", "-o",
+                                    handle_path, handle_path], check=True)
 
             shutil.copytree(temp_dir, output_dir, dirs_exist_ok=True)
 
-        
-
-    def handle_reduce_task(self, dictionary): #unsafe
+    def handle_reduce_task(self, dictionary):  # unsafe
+        """Docstring."""
         task_id = dictionary['task_id']
         prefix = f"mapreduce-local-task{task_id:05d}-"
 
         with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
             # Pipe executable input
-            # Pipe input from memory to the reduce executable. Merge the sorted intermediate files using heapq.merge().
-            # Pipe the output of heapq.merge() into the subprocess’s stdin. Do not write the merge output to file.
+            # Pipe input from memory to the reduce executable.
+            # Merge the sorted intermediate files using heapq.merge().
+            # Pipe the output of heapq.merge()
+            # into the subprocess’s stdin.
+            # Do not write the merge output to file.
 
-            # Use the Python standard library subprocess.Popen class to run the reduce executable in a new process.
-            # The input should be the output of heapq.merge(). The output is a file.
-            # We’ve provided sample code below, which you’ll need to augment with a call to heapq.merge().
+            # Use the Python standard library
+            # subprocess.Popen class to run
+            # the reduce executable in a new process.
+            # The input should be the
+            # output of heapq.merge(). The output is a file.
+            # We’ve provided sample code below,
+            # which you’ll need to augment with a call to heapq.merge().
 
             executable = dictionary['executable']  # reduce executable
-            instreams = [open(path) for path in dictionary['input_paths']]  # merged input files
+            instreams = [open(path)
+                         for path in dictionary['input_paths']]
+            # merged input files
             merged_stream = heapq.merge(*instreams)
             outfile_path = os.path.join(tmpdir, f"part-{task_id:05d}")
             outfile = open(outfile_path, "w")  # open output file
@@ -155,11 +162,13 @@ class Worker:
             for f in instreams:
                 f.close()
 
-            # Move output file to final output directory specified by the Manager
-            shutil.copytree(tmpdir, dictionary['output_directory'], dirs_exist_ok=True)
-
+            # Move output file to final output
+            # directory specified by the Manager
+            shutil.copytree(tmpdir, dictionary['output_directory'],
+                            dirs_exist_ok=True)
 
     def notify_finished(self, task_id):
+        """Docstring."""
         message = json.dumps({
             "message_type": "finished",
             "task_id": task_id,
@@ -168,8 +177,8 @@ class Worker:
         })
         tcp_connect(self.manager_host, self.manager_port, message)
 
-
     def startTCP(self):
+        """Docstring."""
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
             server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             server_sock.bind((self.host, self.port))
@@ -182,8 +191,10 @@ class Worker:
                 except socket.timeout:
                     continue
                 print("Connection from", address[0])
-            
-                # Socket recv() will block for a maximum of 1 second.  If you omit
+
+                # Socket recv() will block for a
+                # maximum of 1 second.
+                # If you omit
                 # this, it blocks indefinitely, waiting for packets.
                 clientsocket.settimeout(1)
                 with clientsocket:
@@ -207,8 +218,8 @@ class Worker:
                 # ⬇️ Dispatch message to appropriate handler
                 self._handle_message(dictionary)
 
-
-    def start_heartbeats(self): #unsafe
+    def start_heartbeats(self):  # unsafe
+        """Docstring."""
         destination = (self.manager_host, self.manager_port)
         heartbeat = json.dumps({
             "message_type": "heartbeat",
@@ -224,14 +235,15 @@ class Worker:
                     LOGGER.warning(f"Failed to send heartbeat: {err}")
             time.sleep(2)
 
-
     def _handle_message(self, msg):
         msg_type = msg.get("message_type")
         handler_map = {
             "register_ack": self._handle_register_ack,
             "shutdown": self._handle_shutdown,
-            "new_map_task": lambda: self._handle_task(self.handle_map_task, msg),
-            "new_reduce_task": lambda: self._handle_task(self.handle_reduce_task, msg),
+            "new_map_task": lambda:
+            self._handle_task(self.handle_map_task, msg),
+            "new_reduce_task": lambda:
+            self._handle_task(self.handle_reduce_task, msg),
         }
 
         handler = handler_map.get(msg_type)
@@ -245,7 +257,7 @@ class Worker:
     def _handle_register_ack(self):
         LOGGER.info("Registration successful")
         self.registered = True
-        heartbeat_thread = threading.Thread(target=self.start_heartbeats, daemon=True)
+        heartbeat_thread = threading.Thread(target=self.start_heartbeats)
         heartbeat_thread.start()
         self.alive_threads.append(heartbeat_thread)
 
@@ -260,8 +272,6 @@ class Worker:
         task_func(msg)
         self.notify_finished(msg["task_id"])
         LOGGER.info(f"Finished {msg['message_type']}")
-
-
 
 
 @click.command()
@@ -287,3 +297,4 @@ def main(host, port, manager_host, manager_port, logfile, loglevel):
 
 if __name__ == "__main__":
     main()
+
