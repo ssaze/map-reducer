@@ -3,9 +3,11 @@ import socket
 import json
 import pdb
 from enum import Enum
-"""Example TCP socket server."""
 import socket
 import json
+
+import logging
+LOGGER = logging.getLogger(__name__)
 
 def tcp_connect(host, port, mesg):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -64,20 +66,25 @@ def tcp_server(host, port, shutdown_event):
 
             try:
                 message_dict = json.loads(message_str)
-                # TODO HANDLE MESSAGE HERE
+                # handle message goes here
+                # manager/worker have their own instances
             except json.JSONDecodeError:
                 continue
             print(message_dict)
 
-def tcp_client(host, server_port, message_json):
+def tcp_client(host, port, message_json):
     """Test TCP Socket Client."""
     # create an INET, STREAMing socket, this is TCP
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
 
-        # connect to the server
-        sock.connect((host, server_port))
+            # connect to the server
+            sock.connect((host, port))
 
-        # send a message
-        message = json.dumps(message_json)
-        sock.sendall(message.encode('utf-8'))
-
+            # send a message
+            message = json.dumps(message_json)
+            sock.sendall(message.encode('utf-8'))
+        return True
+    except ConnectionRefusedError:
+        LOGGER.warning(f"Worker {host}:{port} is unreachable. Marking as dead.")
+        return False
