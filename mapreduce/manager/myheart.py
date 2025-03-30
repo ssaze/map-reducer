@@ -3,7 +3,7 @@ import socket
 import json
 import logging
 import time
-# from mapreduce.manager.job import Job
+from mapreduce.manager.job import Job
 
 LOGGER = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ def manager_udp_server(self, host, port):
         # No sock.listen() since UDP doesn't establish connections like TCP
 
         # Receive incoming UDP messages
-        while not self.shutdown_event.is_set():
+        while not self.threading_data["shutdown_event"].is_set():
             try:
                 message_bytes = sock.recv(4096)
             except socket.timeout:
@@ -65,7 +65,7 @@ def handle_heartbeat(self, worker):
 # below run on sep thread
 def check_heartbeats(self):
     """Check heartbeats every few seconds."""
-    while not self.shutdown_event.is_set():
+    while not self.threading_data["shutdown_event"].is_set():
         current_time = time.time()
         for worker, last_heartbeat in self.worker_data["worker_heartbeats"].items():
             if current_time - last_heartbeat > 10:
