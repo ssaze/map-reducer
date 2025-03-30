@@ -91,13 +91,11 @@ restart_server() {
 
 
 if [ $1 == "start" ]; then
-    server_start
+    start_server
 elif [ $1 == "stop" ]; then
-    server_stop
+    stop_server
 elif [ $1 == "status" ]; then
-    server_status
+    status_server
 elif [ $1 == "restart" ]; then
     restart_server
-else
-    exit 1
 fi
