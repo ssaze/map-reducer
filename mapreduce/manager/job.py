@@ -1,15 +1,12 @@
-"""Docstring."""
-import threading
-from collections import deque
-from enum import Enum
-from mapreduce.utils.ordered_dict import *
+"""Job management for MapReduce."""
 import logging
-import json
+import threading
+from enum import Enum
+from mapreduce.utils.ordered_dict import OrderedDict
 
 
 class JobPhase(Enum):
     """Enumeration for the job phase."""
-
     MAPPING = "mapping"
     REDUCING = "reducing"
     DONE = "done"
@@ -23,39 +20,121 @@ class Job:
 
     def __init__(self, job_id, input_dir, output_dir,
                  num_mappers, num_reducers):
-        """Docstring."""
-        self.job_id = job_id
-        self.input_dir = input_dir
-        self.output_dir = output_dir
-        self.num_mappers = num_mappers
-        self.num_reducers = num_reducers
+        """Initialize a new MapReduce job with the given configuration."""
+        self.config = {
+            'job_id': job_id,
+            'input_dir': input_dir,
+            'output_dir': output_dir,
+            'num_mappers': num_mappers,
+            'num_reducers': num_reducers,
+            'jobspecifictmpdir': None
+        }
 
-        self.jobspecifictmpdir = None
+        self._internal = {
+            'phase': JobPhase.MAPPING,
+            'tasks': OrderedDict(),
+            'task_reference_dict': OrderedDict(),
+            'in_progress_tasks': OrderedDict(),
+            'completed_tasks': OrderedDict(),
+            'mapping_finished_event': threading.Event(),
+            'reducing_finished_event': threading.Event(),
+            'lock': threading.Lock()
+        }
 
-        self.phase = JobPhase.MAPPING  # Start in the mapping phase
+    # -------- Config Accessors --------
+    @property
+    def job_id(self):
+        """Get the job ID."""
+        return self.config['job_id']
 
-        # Task queues
-        self.tasks = OrderedDict()  # Tasks to be assigned
-        self.task_reference_dict = OrderedDict()
-        self.in_progress_tasks = OrderedDict()  # task_id -> worker
-        self.completed_tasks = OrderedDict()
+    @property
+    def input_dir(self):
+        """Get the input directory."""
+        return self.config['input_dir']
 
-        self.mapping_finished_event = threading.Event()
-        self.reducing_finished_event = threading.Event()
-        self.lock = threading.Lock()  # Protect shared state
+    @property
+    def output_dir(self):
+        """Get the output directory."""
+        return self.config['output_dir']
 
+    @property
+    def num_mappers(self):
+        """Get the number of mappers."""
+        return self.config['num_mappers']
+
+    @property
+    def num_reducers(self):
+        """Get the number of reducers."""
+        return self.config['num_reducers']
+
+    @property
+    def jobspecifictmpdir(self):
+        """Get the job-specific temp directory."""
+        return self.config['jobspecifictmpdir']
+
+    @jobspecifictmpdir.setter
+    def jobspecifictmpdir(self, value):
+        """Set the job-specific temp directory."""
+        self.config['jobspecifictmpdir'] = value
+
+    # -------- Runtime State Accessors --------
+    @property
+    def phase(self):
+        """Get the current job phase."""
+        return self._internal['phase']
+
+    @phase.setter
+    def phase(self, value):
+        """Set the current job phase."""
+        self._internal['phase'] = value
+
+    @property
+    def tasks(self):
+        """Get the task queue."""
+        return self._internal['tasks']
+
+    @property
+    def in_progress_tasks(self):
+        """Get the in-progress task mapping."""
+        return self._internal['in_progress_tasks']
+
+    @property
+    def completed_tasks(self):
+        """Get the completed task mapping."""
+        return self._internal['completed_tasks']
+
+    @property
+    def task_reference_dict(self):
+        """Get the task reference dictionary."""
+        return self._internal['task_reference_dict']
+
+    @property
+    def mapping_finished_event(self):
+        """Get the event signaling mapping completion."""
+        return self._internal['mapping_finished_event']
+
+    @property
+    def reducing_finished_event(self):
+        """Get the event signaling reducing completion."""
+        return self._internal['reducing_finished_event']
+
+    @property
+    def lock(self):
+        """Get the threading lock."""
+        return self._internal['lock']
+
+    # -------- Job Logic Methods --------
     def add_task(self, task_id, task):
         """Add a new task to the pending queue."""
-        # tasks are dict at this point
-        LOGGER.info(f"TYPE TASK : {type(task)}")
+        # LOGGER.info(f"TYPE TASK : {type(task)}")
         task_id = int(task["task_id"])
-        LOGGER.info(f"task id in add task: {task_id}")
+        # LOGGER.info(f"task id in add task: {task_id}")
         self.tasks[task_id] = task
 
-        if task_id not in self.task_reference_dict.keys():
+        if task_id not in self.task_reference_dict:
             self.task_reference_dict[task_id] = task
-        else:
-            LOGGER.warning(f"Task {task_id} is alr in task_reference_dict.")
+        # else:
+            # LOGGER.warning(f"Task {task_id} is already in task_reference_dict.")
 
     def get_task(self):
         """Retrieve the next task for assignment, if available."""
@@ -65,65 +144,53 @@ class Job:
 
     def assign_task(self, task_id, worker):
         """Assign a task to a worker."""
-        if task_id in self.in_progress_tasks.keys():
-            LOGGER.info("ASSIGNED TASK ALREADY ASSIGNED")
+        if task_id in self.in_progress_tasks:
+            # LOGGER.info("ASSIGNED TASK ALREADY ASSIGNED")
             return False
-        elif task_id in self.completed_tasks.keys():
-            LOGGER.info("ASSIGNED TASK ALREADY COMPLETED")
+        if task_id in self.completed_tasks:
+            # LOGGER.info("ASSIGNED TASK ALREADY COMPLETED")
             return False
-        LOGGER.info(f"TASK {task_id} HAS BEEN ASSIGNED TO {worker}")
+        # LOGGER.info(f"TASK {task_id} HAS BEEN ASSIGNED TO {worker}")
         self.in_progress_tasks[task_id] = worker
         self.tasks.pop(task_id)
         return True
 
     def task_finished(self, task_id):
-        """Mark a task as completed."""
-        # LOGGER.info(f"task_id: {task_id}.
-        #  in progress keys: {self.in_progress_tasks.keys()}")
-        if task_id in self.in_progress_tasks.keys():
+        """Mark a task as completed and handle phase transitions."""
+        if task_id in self.in_progress_tasks:
             del self.in_progress_tasks[task_id]
-            # Remove from in-progress
-            self.completed_tasks[task_id] = None  # Mark as complete
-            LOGGER.info(f"Task {task_id} marked COMPLETED")
-            # LOGGER.info(f"Tasks remaining: {
-            # self.tasks.keys()}, {self.in_progress_tasks.keys()}")
+            self.completed_tasks[task_id] = None
+            # LOGGER.info(f"Task {task_id} marked COMPLETED")
 
-        # Check if we transition to reducing phase
         if (self.phase == JobPhase.MAPPING
                 and not self.tasks
                 and not self.in_progress_tasks):
-            LOGGER.info(f"MOVING TO REDUCING")
+            # LOGGER.info("MOVING TO REDUCING")
             self.phase = JobPhase.REDUCING
             self.mapping_finished_event.set()
 
-        # Check if we are fully done
         elif (self.phase == JobPhase.REDUCING
               and not self.tasks
               and not self.in_progress_tasks):
-            LOGGER.info(f"JOB COMPLETE")
+            # LOGGER.info("JOB COMPLETE")
             self.phase = JobPhase.DONE
             self.reducing_finished_event.set()
 
     def reset_task(self, task):
-        """
-        Re-enqueue a task if its.
-
-        worker failed and notify waiting threads.
-        """
+        """Re-enqueue a task if its worker failed."""
         task_id = task["task_id"]
-        if task_id in self.in_progress_tasks.keys():
+        if task_id in self.in_progress_tasks:
             del self.in_progress_tasks[task_id]
             actual_task = self.task_reference_dict[task_id]
-            self.tasks[task_id] = actual_task   # Re-add
-        else:
-            LOGGER.info("SOMETHING WRONG AFTER WORKER DEATH REASSIGNMENT")
+            self.tasks[task_id] = actual_task
+        # else:
+            # LOGGER.info("SOMETHING WRONG AFTER WORKER DEATH REASSIGNMENT")
 
     def post_map_reset(self):
-        """Docstring."""
+        """Clear map-phase data before entering reduce phase."""
         with self.lock:
             self.tasks.clear()
             self.task_reference_dict.clear()
             self.in_progress_tasks.clear()
             self.completed_tasks.clear()
             self.phase = JobPhase.REDUCING
-

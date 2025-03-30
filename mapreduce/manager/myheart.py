@@ -3,7 +3,6 @@ import socket
 import json
 import logging
 import time
-from mapreduce.manager.job import Job
 
 LOGGER = logging.getLogger(__name__)
 
