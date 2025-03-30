@@ -21,14 +21,12 @@ LOGGER = logging.getLogger(__name__)
 class Job:
     """Represents a MapReduce Job, tracking its tasks and progress."""
 
-    def __init__(self, job_id, input_dir, output_dir, mapper_executable,
-                 reducer_executable, num_mappers, num_reducers):
+    def __init__(self, job_id, input_dir, output_dir,
+                 num_mappers, num_reducers):
         """Docstring."""
         self.job_id = job_id
         self.input_dir = input_dir
         self.output_dir = output_dir
-        self.mapper_executable = mapper_executable
-        self.reducer_executable = reducer_executable
         self.num_mappers = num_mappers
         self.num_reducers = num_reducers
 
