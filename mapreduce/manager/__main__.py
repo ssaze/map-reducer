@@ -8,9 +8,19 @@ import threading
 import socket
 import pathlib
 import shutil
+import click
+
 from pathlib import Path
 from collections import deque
-from mapreduce.manager.job import Job, JobPhase
+
+from mapreduce.utils.ordered_dict import *
+from mapreduce.manager.tcp_listener import *
+from mapreduce.manager.myheart import *
+from mapreduce.manager.fuckingmaininputmapreduce import job_queue
+
+
+#TODO ignore misbehaving workers
+
 
 # Configure logging
 LOGGER = logging.getLogger(__name__)
@@ -18,488 +28,86 @@ LOGGER = logging.getLogger(__name__)
 class Manager:
     """Represent a MapReduce framework Manager node."""
 
-    def __init__(self, host, port, job_params=None):
-        """Construct a Manager instance, start listening for messages, and optionally create a Job."""
-        LOGGER.info(
-            "Starting manager host=%s port=%s pwd=%s",
-            host,
-            port,
-            os.getcwd(),
-        )
-
+    def __init__(self, host, port):
+        "ohhhhh i wish the lord would take me now"
+        # variable inits
         self.host = host
         self.port = port
-        self.workers = deque()
-        self.busy_workers = set()
-        self.worker_heartbeats = {}
-        self.dead_workers = set()
         self.job = None
+        self.workers = OrderedDict()
+        self.busy_workers = OrderedDict()
+        self.worker_heartbeats = ThreadSafeOrderedDict()
+        self.dead_workers = set()
+        self.threads = []
 
         self.shutdown_event = threading.Event()
-        self.worker_condition = threading.Condition()
+        self.new_job_alert_condition = threading.Condition()
 
         self.job_queue = deque()
         self.next_job_id = 0
 
-
-        # Create temporary directory for shared map/reduce files
-        self.tmpdir_obj = tempfile.TemporaryDirectory(prefix="mapreduce-shared-")
-        self.tmpdir = self.tmpdir_obj.name
-        LOGGER.info("Created tmpdir %s", self.tmpdir)
-
-        self.threads = []
-
-        # JOB QUEUE THREAD HANDLE_JOB_QUEUE
-        job_thread = threading.Thread(target=self.handle_job_queue, daemon=True)
-        job_thread.start()
-        self.threads.append(job_thread)
-
-        # Start TCP command listener (e.g., for shutdown)
-        command_thread = threading.Thread(target=self.listen_for_commands, daemon=True)
-        command_thread.start()
-        self.threads.append(command_thread)
-
-        LOGGER.info("INITIALIZED PROPERLY")
-
         # Create temporary directory for shared map/reduce files
         prefix = f"mapreduce-shared-"
-        LOGGER.info(f"THREAD COUNT: {threading.active_count()}")
-        self.start_heartbeat_listener()
-        LOGGER.info(f"THREAD COUNT: {threading.active_count()}")
-        self.start_dead_worker_handler()
+        with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
+            # everything in here so this `with` block doesn't end 
+            # until the Manager shuts down.
+            self.tmpdir = tmpdir
+            LOGGER.info("Created tmpdir %s", self.tmpdir)
 
-        try:
-            self.shutdown_event.wait()  # Wait until shutdown signal
-        except KeyboardInterrupt:
-            LOGGER.info("Shutdown signal received.")
-        finally:
-            LOGGER.info("Manager shutting down")
-            self.cleanup()
+            # threading
+            heartbeat_server_thread = threading.Thread(target=manager_udp_server, args=(self, host, port), daemon=True)
+            manager_tcp_server_thread = threading.Thread(target=manager_tcp_server, args=(self, host, port), daemon=True)
+            dead_worker_checking_thread = threading.Thread(target=check_heartbeats, args=(self,), daemon=True)
+            job_queue_thread = threading.Thread(target=job_queue, args=(self,), daemon=True)
 
-        LOGGER.info("Cleaned up tmpdir %s", self.tmpdir)
+            self.threads.extend([heartbeat_server_thread, 
+                                 manager_tcp_server_thread, 
+                                 dead_worker_checking_thread, 
+                                 job_queue_thread])
+
+            for thread in self.threads:
+                thread.start()
+
+            try:
+                self.shutdown_event.wait()  # Wait until shutdown signal
+            except KeyboardInterrupt:
+                LOGGER.info("Shutdown signal received.")
+            finally:
+                LOGGER.info("Manager shutting down")
+                self.cleanup()
+
+            LOGGER.info("Cleaned up tmpdir %s", self.tmpdir)
 
     # ------------------------------- Job Creation and Initialization -------------------------------
-    def create_job(self, job_id, mapper_executable, reducer_executable, output_directory, num_mappers, num_reducers):
-        """Create and start a new MapReduce job."""
-        LOGGER.info("JOB CREATED")
-        self.job = Job(
-            job_id,
-            mapper_executable,
-            reducer_executable,
-            output_directory,
-            num_mappers,
-            num_reducers,
-        )
-
     def get_available_worker(self):
         """ Get the next available worker. """
         LOGGER.info("Checking for available worker...")
-        for worker in self.workers:
-            if worker not in self.busy_workers and worker not in self.dead_workers:
+        for worker in self.workers.keys():
+            if worker not in self.busy_workers.keys() and worker not in self.dead_workers:
                 LOGGER.info(f"Worker {worker} is available.")
                 return worker
         LOGGER.info("No available workers.")
-        return None  # All workers are dead
-    # ------------------------------- General Task Management -------------------------------
-    def send_task_to_worker(self, worker, task):
-        """ Send the task to the worker via TCP. """
-        worker_host, worker_port = worker
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_socket:
-                tcp_socket.connect((worker_host, worker_port))
-                tcp_socket.settimeout(1)
-                LOGGER.info(f"Connected to worker {worker} host {worker_host}")
-                task_data = json.dumps(task)
-                LOGGER.info(f"Calling sendall() with: {task_data}")
-                tcp_socket.sendall(task_data.encode()) # changed to sendall EDIT
-                tcp_socket.close()
-                self.busy_workers.add(worker)
-                
-                task_id = task.get("task_id")
-                LOGGER.info(f"Sending task {task_id} to worker {worker}")
-
-        except Exception as e:
-            LOGGER.warning(f"Failed to send task to worker {worker}: {e}")
-            self.dead_workers.add(worker)  # Mark as dead and reassign task
-            self.reassign_tasks(worker)
-
-    def reassign_tasks(self, dead_worker_key):
-        """ Reassign tasks that were allocated to the dead worker. """
-        LOGGER.info(f"Reassigning tasks from dead worker {dead_worker_key}.")
-        with self.job.lock:
-            failed_tasks = [
-                task_id for task_id, worker in self.job.in_progress_tasks.items()
-                if worker == dead_worker_key
-            ]
-
-            # Reset failed tasks and notify waiting threads
-            for task_id in failed_tasks:
-                self.job.task_reset(task_id)
-                LOGGER.warning(f"Task {task_id} reassigned from dead worker {dead_worker_key}")
-
-        with self.job.condition:
-            self.job.condition.notify_all()
-    
-    def handle_worker_message(self, message):
-        """!!! Processes TASK COMPLETION !!!"""
-        message_data = json.loads(message)
-        LOGGER.info(f"PROCESSING worker message: {message}")
-        LOGGER.info("received\n%s", json.dumps(message_data, indent=2))
-
-        if message_data["message_type"] == "finished":
-            LOGGER.info(f"TASK MARKED COMPLETED")
-
-            worker = (message_data["worker_host"], message_data["worker_port"])
-            task_id = message_data["task_id"]
-
-            if worker not in self.busy_workers:
-                LOGGER.warning(f"ERROR: UNEXPECTED completion message from {worker} for task {task_id}")
-                return
-
-            with self.job.lock:
-                # Remove worker from busy set and mark task as complete
-                if worker in self.busy_workers:
-                    LOGGER.info(f"REMOVING {worker} FROM BUSY WORKERS")
-                    self.busy_workers.remove(worker)
-
-                self.job.task_finished(task_id)  # Update job state
-
-                LOGGER.info(f"Worker {worker} completed task {task_id}.")
-
-                # Notify any waiting threads that job state has changed
-                with self.job.condition:
-                    self.job.condition.notify_all()  # Wake up waiting threads
+        return None  # All workers are dead    
     # ------------------------------- Worker Register and Shutdown and Listening Commands -------------------------------
     def forward_shutdown_to_workers(self):
         """Send shutdown message to all registered workers."""
         LOGGER.debug(f"Forwarding shutdown to workers.")
-        for worker_host, worker_port in self.workers:
+        message = {"message_type": "shutdown"}
+        for worker_host, worker_port in self.workers.keys():
+            worker = (worker_host, worker_port)
+            if worker in self.dead_workers:
+                continue
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.connect((worker_host, worker_port))
-                    shutdown_message = json.dumps({"message_type": "shutdown"})
-                    s.sendall(shutdown_message.encode('utf-8'))
+                if tcp_client(worker_host, worker_port, message):
                     LOGGER.info(f"Sent shutdown message to worker {worker_host}:{worker_port}")
+                else:
+                    LOGGER.info(f"tcp client failed to sent shutdown message to worker {worker_host}:{worker_port}")
             except Exception as e:
                 LOGGER.warning(f"Failed to send shutdown to worker {worker_host}:{worker_port}: {e}")
-
-    def listen_for_commands(self):
-        """Main TCP server to receive shutdown and register commands."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_socket:
-            tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            tcp_socket.bind((self.host, self.port))
-            tcp_socket.listen()
-            tcp_socket.settimeout(1)
-
-            LOGGER.info("Manager is listening for job submissions or shutdown on TCP %s:%s", self.host, self.port)
-
-            while not self.shutdown_event.is_set():
-                try:
-                    conn, addr = tcp_socket.accept()
-                    LOGGER.info(f"Accepted connection from {addr}")
-
-                    # 🔥 `with conn:` ensures mock.__enter__() is called, required for test
-                    with conn:
-                        try:
-                            message_raw = conn.recv(4096)
-                        except StopIteration:
-                            LOGGER.warning("Mocked conn.recv() exhausted.")
-                            break
-
-                        if not message_raw:
-                            continue
-
-                        message_data = json.loads(message_raw.decode())
-                        LOGGER.debug("TCP recv\n%s", json.dumps(message_data, indent=2))
-
-                        msg_type = message_data.get("message_type")
-
-                        if msg_type == "shutdown":
-                            LOGGER.info("Received shutdown request")
-                            self.forward_shutdown_to_workers()
-                            self.shutdown_event.set()
-                            return
-
-                        elif message_data.get("message_type") == "register":
-                            worker_host = message_data["worker_host"]
-                            worker_port = message_data["worker_port"]
-                            worker_key = (worker_host, worker_port)
-                            self.workers.append(worker_key)
-
-                            LOGGER.info("Registering Worker %s", worker_key)
-
-                            ack_message = {"message_type": "register_ack"}
-                            ack_bytes = json.dumps(ack_message).encode("utf-8")
-
-                            #Send ack on a new socket — this is what the test spies on
-                            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                                s.connect((worker_host, worker_port))
-                                s.sendall(ack_bytes)
-                                s.shutdown(socket.SHUT_WR)
-
-                            LOGGER.info("SENT ACKNOWLEDGEMENT %s to %s", ack_message, worker_key)
-
-
-
-                        elif msg_type == "new_manager_job":
-                            job_id = self.next_job_id
-                            self.next_job_id += 1
-
-                            job = Job(
-                                job_id,
-                                message_data["mapper_executable"],
-                                message_data["reducer_executable"],
-                                message_data["output_directory"],
-                                message_data["num_mappers"],
-                                message_data["num_reducers"],
-                            )
-                            self.job_queue.append((job, message_data["input_directory"], message_data["num_mappers"]))
-                            LOGGER.info(f"Received job {job_id} and queued it.")
-
-                        elif msg_type == "finished":
-                            self.handle_worker_message(message_raw.decode())
-
-                except Exception:
-                    LOGGER.exception("Error in TCP command listener")
-    # ------------------------------- Mapping Phase Functions -------------------------------
-    def handle_job_queue(self):
-        while not self.shutdown_event.is_set():
-            if not self.job_queue:
-                LOGGER.debug("Job queue is empty. Waiting for new job.")
-                time.sleep(1)
-                continue
-
-            # Get next job
-            job, input_dir, num_mappers = self.job_queue.popleft()
-            job_id = job.job_id
-            output_dir = job.output_directory
-            mapper = job.mapper_executable
-            reducer = job.reducer_executable
-            num_mappers = job.num_mappers
-            num_reducers = job.num_reducers
-
-            # Step 1: Clean and recreate output directory
-            if os.path.exists(output_dir):
-                shutil.rmtree(output_dir)
-            os.makedirs(output_dir)
-
-            # Step 2: Create shared temp dir for this job
-            self.shared_job_dir = os.path.join(self.tmpdir, f"job-{job_id:05d}")
-            os.makedirs(self.shared_job_dir)
-
-            job.output_directory = self.shared_job_dir
-            LOGGER.info(f"Starting job {job_id} with mapper={mapper}, reducer={reducer}, dir={job.output_directory}, HANDLE_JOB_QUEUE")
-            # TODO CHECK
-            # Step 3: Set and run Job
-            self.job = job
-
-            self.start_mapping(input_paths)
-
-            # Wait for job to complete
-            with self.job.condition:
-                while not self.job.is_complete():
-                    self.job.condition.wait(timeout=1)  # <- add this timeout
-                    if self.shutdown_event.is_set():
-                        LOGGER.warning("Job queue thread exiting due to shutdown.")
-                        return
-
-            LOGGER.info(f"Job {job_id} complete")
-
-    def start_mapping(self, input_files):
-        """Start the mapping phase with fault tolerance."""
-        partitions = self.partition_input_files(input_files, self.job.num_mappers)
-
-        # Add all mapping tasks to the Job
-        for task_id, input_paths in enumerate(partitions):
-            task_message = {
-                "message_type": "new_map_task",
-                "task_id": task_id,
-                "input_paths": input_paths,
-                "executable": self.job.mapper_executable,
-                "output_directory": self.job.output_directory,
-                "num_partitions": self.job.num_reducers,
-            }
-            self.job.add_task(json.dumps(task_message))
-        # notify jobs added
-        with self.job.condition:
-            self.job.condition.notify_all()
-
-        # Assign tasks to workers as they become available
-        def worker_task_handler():
-            while self.job.phase == JobPhase.MAPPING and not self.shutdown_event.is_set():
-                with self.job.condition:
-                    while not self.job.pending_tasks and self.job.phase == JobPhase.MAPPING and not self.shutdown_event.is_set():
-                        self.job.condition.wait(timeout=1)
-
-
-                    worker = self.get_available_worker()
-                    if worker:
-                        task_data = self.job.get_task()
-                        if task_data:
-                            task_id = json.loads(task_data)["task_id"]
-                            if self.job.assign_task(task_id, worker):
-                                print("\n" + task_data + "\n")
-                                self.send_task_to_worker(worker, json.loads(task_data))
-                                LOGGER.info(f"Assigned task {task_id} to worker {worker}")
-                            else:
-                                LOGGER.warning(f"Task {task_id} could not be assigned to worker {worker}")
-
-        # Start worker task assignment in a thread
-        task_thread = threading.Thread(target=worker_task_handler, daemon=True)
-        self.threads.append(task_thread)
-        task_thread.start()
-
-        # Wait until all mapping tasks are done before moving to reducing
-        with self.job.condition:
-            while self.job.phase == JobPhase.MAPPING and not self.job.all_tasks_completed():
-                self.job.condition.wait()  # Wait until mapping is complete
-
-        self.start_reducing()  # Move to reducing phase
-
-    # ------------------------------- Reducing Phase Functions -------------------------------
-    def start_reducing(self):
-        """Start the reducing phase of the job."""
-        # Ensure mapping is complete before transitioning to reducing
-        if self.job.phase == JobPhase.MAPPING:
-            while self.job.pending_tasks or self.job.in_progress_tasks:
-                time.sleep(1)  # Wait until all mapping tasks are complete
-            self.job.phase = JobPhase.REDUCING  # Transition to reducing phase
-
-        shared_temp_dir = self.shared_job_dir  # The shared directory for intermediate map outputs
-        num_reducers = self.job.num_reducers
-        worker_list = list(self.workers)  # Get the list of available workers
-
-        # Ensure there are workers available
-        if not worker_list:
-            LOGGER.error("No workers available for reducing phase.")
-            return
-
-        # Dictionary to store reduce tasks
-        reduce_tasks = {i: [] for i in range(num_reducers)}
-
-        # Identify all map output files
-        map_output_files = list(pathlib.Path(shared_temp_dir).glob("maptask*-part*"))
-
-        # Assign files to partitions
-        for file in map_output_files:
-            partition_number = int(file.name.split('-')[1].split('part')[1])  # Extract partition number
-            reduce_tasks[partition_number].append(str(file))  # Store file path
-
-        # Assign reduce tasks to workers
-        task_id = 0
-        for partition, files in reduce_tasks.items():
-            worker = worker_list[task_id % len(worker_list)]  # Round-robin assignment
-            message = {
-                "message_type": "new_reduce_task",
-                "task_id": task_id,
-                "input_paths": files,
-                "executable": self.job.reducer_executable,
-                "output_directory": self.job.output_directory
-            }
-
-            # Add the reduce task to the job queue
-            self.job.add_task(json.dumps(message))
-            task_id += 1
-
-        # Notify that tasks have been added
-        with self.job.condition:
-            self.job.condition.notify_all()
-
-    # ------------------------------- Worker Heartbeat and Failure Handling -------------------------------
-    def start_heartbeat_listener(self):
-        """Start listening for heartbeats from workers (UDP listener)."""
-        LOGGER.info("Starting HEARTBEAT listener thread...")
-        heartbeat_thread = threading.Thread(target=self.listen_for_heartbeats, daemon=True)
-        self.threads.append(heartbeat_thread)
-        heartbeat_thread.start()
-
-    def listen_for_heartbeats(self):
-        """ Listen for UDP heartbeats from workers. """
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
-            udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            udp_socket.bind((self.host, self.port))
-            udp_socket.settimeout(1)
-
-            LOGGER.info(f"UDP socket instance: {udp_socket}")
-            LOGGER.info(f"UDP recv function before calling: {udp_socket.recvfrom}")
-            LOGGER.info("Manager is listening for heartbeats on UDP %s:%s", self.host, self.port)
-            LOGGER.info(f"Initial shutdown event: {self.shutdown_event.is_set()}")
-
-            while not self.shutdown_event.is_set():
-                try:
-                    LOGGER.info(f"Before receiving heartbeat call")
-                    # print("DEBUG: mock_sendall __self__ =", id(mock_sendall.__self__))
-                    recv_result = udp_socket.recv(4096)
-                    LOGGER.info(f"\n \n \n RECV recvfrom result: {recv_result}")
-                    strng = recv_result.decode("utf-8")
-                    dict = json.loads(strng)
-                    LOGGER.info(f"\n \n \n HERE OFFICE HOURS HERE recvfrom result: {dict}")
-
-                    # LOGGER.info(f"Received message: {message} from address: {addr}")
-                    # break
-                    if not dict:
-                        LOGGER.warning("Received empty message or address from UDP socket")
-                        continue  # Skip empty messages
-                    self.process_heartbeat(dict)
-                except socket.timeout:
-                    LOGGER.error(f"TIMEOUT")
-                    continue
-
-                except BlockingIOError: #Catch the correct exception
-                    time.sleep(1) #sleep to prevent 100% cpu usage.
-                    LOGGER.error(f"BLOCKING")
-                    continue
-                except Exception as e:
-                    LOGGER.error(f"Error while processing heartbeat: {e}", exc_info=True)
-                    break
-
-    def process_heartbeat(self, heartbeat_data):
-        """ Process heartbeats from workers, marking them as alive or dead. """
-        worker_host = heartbeat_data['worker_host']
-        worker_port = heartbeat_data['worker_port']
-        worker_key = (worker_host, worker_port)
-
-        with self.job.lock:
-            # Reset missed heartbeats counter for the worker
-            self.worker_heartbeats[worker_key] = 0
-            # If the worker is in dead_workers, remove it
-            if worker_key in self.dead_workers:
-                self.dead_workers.remove(worker_key)
-                with self.job.condition:
-                    self.job.condition.notify_all()
-                LOGGER.info(f"Worker {worker_key} has been revived.")
-                # Notify other threads that the state of the worker has changed
-
-    def start_dead_worker_handler(self):
-        """Start handling dead workers and reassign their tasks."""
-        dead_worker_thread = threading.Thread(target=self.handle_dead_workers, daemon=True)
-        self.threads.append(dead_worker_thread)
-        dead_worker_thread.start()
-
-
-    def handle_dead_workers(self):
-        """Monitor for dead workers and reassign their tasks."""
-        while not self.shutdown_event.is_set():
-            time.sleep(5)  # Periodic check for dead workers
-
-            with self.job.lock:
-                for worker_key, missed_heartbeats in list(self.worker_heartbeats.items()):
-                    if missed_heartbeats >= 5:  # Worker is dead
-                        if worker_key not in self.dead_workers:
-                            self.dead_workers.add(worker_key)
-                            LOGGER.warning(f"Worker {worker_key} is dead. Reassigning tasks.")
-                            self.reassign_tasks(worker_key)
-
-                    # Increment missed heartbeat count for alive workers
-                    if worker_key not in self.dead_workers:
-                        self.worker_heartbeats[worker_key] += 1
-            with self.job.condition:
-                self.job.condition.notify_all()
-
     # ------------------------------- Cleanup Function -------------------------------
     def cleanup(self):
         """ Cleanup resources on shutdown. """
-        self.shutdown_event.set()  # Signal shutdown
+        # self.shutdown_event.set() - already calls on msg receive
         for thread in self.threads:
             thread.join(timeout=2)
             if thread.is_alive():
@@ -508,18 +116,28 @@ class Manager:
         LOGGER.info("All threads have completed.")
         sys.exit(0)
 
+@click.command()
+@click.option("--host", "host", default="localhost")
+@click.option("--port", "port", default=6000)
+@click.option("--logfile", "logfile", default=None)
+@click.option("--loglevel", "loglevel", default="info")
+@click.option("--shared_dir", "shared_dir", default=None)
+def main(host, port, logfile, loglevel, shared_dir):
+    """Run Manager."""
+    tempfile.tempdir = shared_dir
+    if logfile:
+        handler = logging.FileHandler(logfile)
+    else:
+        handler = logging.StreamHandler()
+    formatter = logging.Formatter(
+        f"Manager:{port} [%(levelname)s] %(message)s"
+    )
+    handler.setFormatter(formatter)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(loglevel.upper())
+    Manager(host, port)
 
-def main():
-    import argparse
-
-    parser = argparse.ArgumentParser(description="MapReduce Manager")
-    parser.add_argument("--host", type=str, default="localhost", help="Host to bind the manager")
-    parser.add_argument("--port", type=int, default=8001, help="Port to bind the manager")
-    parser.add_argument("--loglevel", type=str, default="INFO", help="Logging level")
-    args = parser.parse_args()
-
-    logging.basicConfig(level=getattr(logging, args.loglevel.upper()))
-    Manager(args.host, args.port)
 
 if __name__ == "__main__":
     main()
