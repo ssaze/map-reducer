@@ -27,10 +27,7 @@ class Worker:
         self.manager_host = manager_host
         self.manager_port = manager_port
         # Consolidate boolean flags to reduce instance attributes
-        self.status = {
-            "registered": False,
-            "alive": True
-        }
+
         self.shutdown = threading.Event()
         self.alive_threads = []
 
@@ -109,7 +106,6 @@ class Worker:
                                 f"maptask{task_id:05d}-part{partition_id:05d}"
                             )
                             filepath = os.path.join(temp_dir, filename)
-                            # pylint: disable=consider-using-with
                             file_handles[partition_id] = open(
                                 filepath, "w+", encoding="utf-8"
                             )
@@ -146,7 +142,6 @@ class Worker:
 
             # Use with statements for file operations
             instreams = []
-            # pylint: disable=consider-using-with
             for path in dictionary['input_paths']:
                 instreams.append(open(path, encoding="utf-8"))
 
@@ -192,7 +187,7 @@ class Worker:
             server_sock.listen()
             server_sock.settimeout(1)
 
-            while self.status["alive"]:
+            while not self.shutdown.is_set():
                 message_dict, _ = receive_json_message(server_sock)
                 if message_dict:
                     self._handle_message(message_dict)
@@ -205,13 +200,10 @@ class Worker:
             "worker_host": self.host,
             "worker_port": self.port
         })
-        while self.status["alive"] and self.status["registered"]:
+        while not self.shutdown.is_set():
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                try:
-                    sock.connect((destination))
-                    sock.sendall(heartbeat.encode('utf-8'))
-                except Exception as err:  # pylint: disable=broad-except
-                    LOGGER.warning("Failed to send heartbeat: %s", err)
+                sock.connect((destination))
+                sock.sendall(heartbeat.encode('utf-8'))
             time.sleep(2)
 
     def _handle_message(self, msg):
@@ -235,13 +227,11 @@ class Worker:
 
     def _handle_register_ack(self):
         LOGGER.info("Registration successful")
-        self.status["registered"] = True
         heartbeat_thread = threading.Thread(target=self.start_heartbeats)
         heartbeat_thread.start()
         self.alive_threads.append(heartbeat_thread)
 
     def _handle_shutdown(self):
-        self.status["alive"] = False
         self.shutdown.set()
 
     def _handle_task(self, task_func, msg):
