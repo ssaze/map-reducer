@@ -83,9 +83,10 @@ class Worker:
         partition_number = keyhash % num_partitions
         return partition_number
 
+
     def handle_map_task(self, task_info):
         """Process a map task from the manager.
-        
+
         Args:
             task_info: Dictionary containing map task parameters
         """
@@ -98,39 +99,54 @@ class Worker:
         temp_prefix = f"mapreduce-local-task{task_id:05d}-"
 
         with tempfile.TemporaryDirectory(prefix=temp_prefix) as temp_dir:
-            file_handles = [None] * num_partitions
+            file_handles = self._create_partition_files(
+                task_id, input_files, executable, num_partitions, temp_dir
+            )
 
-            for input_path in input_files:
-                with open(input_path, encoding="utf-8") as infile:
-                    with subprocess.Popen(
-                        [executable],
-                        stdin=infile,
-                        stdout=subprocess.PIPE,
-                        text=True,
-                    ) as map_process:
-                        for line in map_process.stdout:
-                            if "\t" not in line:
-                                continue
-                            key, _ = line.split("\t", 1)
-                            partition_id = self.partition(key, num_partitions)
-
-                            if file_handles[partition_id] is None:
-                                filename = f"maptask{task_id:05d}-part{partition_id:05d}"
-                                filepath = os.path.join(temp_dir, filename)
-                                file_handles[partition_id] = open(
-                                    filepath, "w+", encoding="utf-8"
-                                )
-
-                            file_handles[partition_id].write(line)
-
-            # Sort each partition using subprocess sort
-            for handle in file_handles:
-                if handle:
-                    handle_path = handle.name
-                    handle.close()
-                    subprocess.run(["sort", "-o", handle_path, handle_path], check=True)
-
+            self._sort_partitions(file_handles)
             shutil.copytree(temp_dir, output_dir, dirs_exist_ok=True)
+
+
+    def _create_partition_files(
+        self, task_id, input_files, executable, num_partitions, temp_dir
+    ):
+        """Create partitioned intermediate files for map output."""
+        file_handles = [None] * num_partitions
+
+        for input_path in input_files:
+            with open(input_path, encoding="utf-8") as infile:
+                with subprocess.Popen(
+                    [executable],
+                    stdin=infile,
+                    stdout=subprocess.PIPE,
+                    text=True,
+                ) as map_process:
+                    for line in map_process.stdout:
+                        if "\t" not in line:
+                            continue
+                        key, _ = line.split("\t", 1)
+                        partition_id = self.partition(key, num_partitions)
+
+                        if file_handles[partition_id] is None:
+                            filename = f"maptask{task_id:05d}-part{partition_id:05d}"
+                            filepath = os.path.join(temp_dir, filename)
+                            file_handles[partition_id] = open(
+                                filepath, "w+", encoding="utf-8"
+                            )
+
+                        file_handles[partition_id].write(line)
+
+        return file_handles
+
+
+    def _sort_partitions(self, file_handles):
+        """Sort each intermediate partition file using Unix sort."""
+        for handle in file_handles:
+            if handle:
+                handle_path = handle.name
+                handle.close()
+                subprocess.run(["sort", "-o", handle_path, handle_path], check=True)
+
 
     def handle_reduce_task(self, dictionary):
         """Process a reduce task from the manager.
