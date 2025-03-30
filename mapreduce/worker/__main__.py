@@ -130,6 +130,7 @@ class Worker:
                         if file_handles[partition_id] is None:
                             filename = f"maptask{task_id:05d}-part{partition_id:05d}"
                             filepath = os.path.join(temp_dir, filename)
+                            # pylint: disable=consider-using-with
                             file_handles[partition_id] = open(
                                 filepath, "w+", encoding="utf-8"
                             )
@@ -145,7 +146,14 @@ class Worker:
             if handle:
                 handle_path = handle.name
                 handle.close()
-                subprocess.run(["sort", "-o", handle_path, handle_path], check=True)
+                with subprocess.Popen(
+                    ["sort", "-o", handle_path, handle_path],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                ) as proc:
+                    proc.communicate()
+                    if proc.returncode != 0:
+                        raise subprocess.CalledProcessError(proc.returncode, proc.args)
 
 
     def handle_reduce_task(self, dictionary):
@@ -163,6 +171,7 @@ class Worker:
 
             # Use with statements for file operations
             instreams = []
+            # pylint: disable=consider-using-with
             for path in dictionary['input_paths']:
                 instreams.append(open(path, encoding="utf-8"))
 
