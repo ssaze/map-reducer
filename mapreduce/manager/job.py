@@ -1,7 +1,9 @@
 import threading
 from collections import deque
 from enum import Enum
+from mapreduce.utils.ordered_dict import *
 import logging
+import json
 
 class JobPhase(Enum):
     """Enumeration for the job phase."""
@@ -23,79 +25,82 @@ class Job:
         self.num_mappers = num_mappers
         self.num_reducers = num_reducers
 
+        self.jobspecifictmpdir = None
+
         self.phase = JobPhase.MAPPING  # Start in the mapping phase
 
         # Task queues
-        self.tasks = deque()  # Tasks to be assigned
-        self.task_reference_dict = {}
-        self.in_progress_tasks = {}  # task_id -> worker
-        self.completed_tasks = set()
-        self.condition = threading.Condition()
-        self.mapping_finished_notif = threading.Condition()
-        self.reducing_finished_notif = threading.Condition()
+        self.tasks = OrderedDict()  # Tasks to be assigned
+        self.task_reference_dict = OrderedDict()
+        self.in_progress_tasks = OrderedDict()  # task_id -> worker
+        self.completed_tasks = OrderedDict()
+
+        self.mapping_finished_event = threading.Event()
+        self.reducing_finished_event = threading.Event()
         self.lock = threading.Lock()  # Protect shared state
 
-    def add_task(self, task):
+    def add_task(self, task_id, task):
         """Add a new task to the pending queue."""
-        # self.job.add_task(json.dumps(task_message))
-        # tasks are json
-        with self.lock:
-            self.tasks.append(task)
-            task_id = task[task_id]
+        # tasks are dict at this point
+        LOGGER.info(f"TYPE TASK : {type(task)}")
+        task_id = int(task["task_id"])
+        LOGGER.info(f"task id in add task: {task_id}")
+        self.tasks[task_id] = task
+
+        if task_id not in self.task_reference_dict.keys():
             self.task_reference_dict[task_id] = task
-            LOGGER.info("ADDED TASK {task} WITH ID {task_id}")
-        with self.condition:
-            self.condition.notify_all() # NOTIFY NEW TASK
+        else:
+            LOGGER.warning(f"Task {task_id} already exists in task_reference_dict. What the fuck happened")
 
     def get_task(self):
         """Retrieve the next task for assignment, if available."""
-        with self.lock:
-            if self.tasks:
-                return self.tasks.popleft()
-            return None
+        if self.tasks:
+            return list(self.tasks.items())[0]
+        return None
 
     def assign_task(self, task_id, worker):
         """Assign a task to a worker."""
-        with self.lock:
-            if task_id in self.in_progress_tasks:
-                LOGGER.info("ASSIGNED TASK ALREADY ASSIGNED")
-                return False
-            elif task_id in self.completed_tasks():
-                LOGGER.info("ASSIGNED TASK ALREADY COMPLETED")
-                return False
-            LOGGER.info(f"TASK {task_id} HAS BEEN ASSIGNED TO {worker}")
-            self.in_progress_tasks[task_id] = worker
-            return True
+        if task_id in self.in_progress_tasks.keys():
+            LOGGER.info("ASSIGNED TASK ALREADY ASSIGNED")
+            return False
+        elif task_id in self.completed_tasks.keys():
+            LOGGER.info("ASSIGNED TASK ALREADY COMPLETED")
+            return False
+        LOGGER.info(f"TASK {task_id} HAS BEEN ASSIGNED TO {worker}")
+        self.in_progress_tasks[task_id] = worker
+        self.tasks.pop(task_id)
+        return True
 
     def task_finished(self, task_id):
         """Mark a task as completed."""
-        with self.lock:
-            if task_id in self.in_progress_tasks:
-                del self.in_progress_tasks[task_id]  # Remove from in-progress
-                self.completed_tasks.add(task_id)  # Mark as complete
-                LOGGER.info(f"TASK {task_id} COMPLETED")
+        LOGGER.info(f"task_id: {task_id}. in progress keys: {self.in_progress_tasks.keys()}")
+        if task_id in self.in_progress_tasks.keys():
+            del self.in_progress_tasks[task_id]  # Remove from in-progress
+            self.completed_tasks[task_id] = None  # Mark as complete
+            LOGGER.info(f"Task {task_id} marked COMPLETED")
+            LOGGER.info(f"Tasks remaining: {self.tasks.keys()}, {self.in_progress_tasks.keys()}")
 
-            # Check if we transition to reducing phase
-            if self.phase == JobPhase.MAPPING and not self.tasks and not self.in_progress_tasks:
-                LOGGER.info(f"MOVING TO REDUCING")
-                self.phase = JobPhase.REDUCING
-                self.mapping_finished_notif.notify_all()
+        # Check if we transition to reducing phase
+        if self.phase == JobPhase.MAPPING and not self.tasks and not self.in_progress_tasks:
+            LOGGER.info(f"MOVING TO REDUCING")
+            self.phase = JobPhase.REDUCING
+            self.mapping_finished_event.set()
 
-            # Check if we are fully done
-            if self.phase == JobPhase.REDUCING and not self.tasks and not self.in_progress_tasks:
-                LOGGER.info(f"JOB COMPLETE")
-                self.phase = JobPhase.DONE
-                self.reducing_finished_notif.notify_all()
+        # Check if we are fully done
+        elif self.phase == JobPhase.REDUCING and not self.tasks and not self.in_progress_tasks:
+            LOGGER.info(f"JOB COMPLETE")
+            self.phase = JobPhase.DONE
+            self.reducing_finished_event.set()
 
-    def reset_task(self, task_id):
+    def reset_task(self, task):
         """Re-enqueue a task if its worker failed and notify waiting threads."""
-        with self.condition:
-            if task_id in self.in_progress_tasks:
-                del self.in_progress_tasks[task_id]
-                self.tasks.appendleft(task_id)  # Re-add to front
-                self.condition.notify_all() # new task alert
-            else:
-                LOGGER.info("SOMETHING WRONG AFTER WORKER DEATH REASSIGNMENT")
+        task_id = task["task_id"]
+        if task_id in self.in_progress_tasks.keys():
+            del self.in_progress_tasks[task_id]
+            actual_task = self.task_reference_dict[task_id]
+            self.tasks[task_id] = actual_task # Re-add
+        else:
+            LOGGER.info("SOMETHING WRONG AFTER WORKER DEATH REASSIGNMENT")
 
     def post_map_reset(self):
         with self.lock:
