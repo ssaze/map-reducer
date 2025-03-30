@@ -28,7 +28,6 @@ class Manager:
 
     def __init__(self, host, port):
         """Initialize Manager."""
-
         self.config = {
             'host': host,
             'port': port,
@@ -102,7 +101,6 @@ class Manager:
                 LOGGER.info("Manager shutting down")
                 self.cleanup()
 
-
     def cleanup(self):
         """Cleanup resources on shutdown."""
         for thread in self.config["threads"]:
@@ -112,8 +110,6 @@ class Manager:
 
         LOGGER.info("All threads have completed.")
         sys.exit(0)
-
-            # LOGGER.info("Cleaned up tmpdir %s", self.tmpdir)
 
 
 def get_available_worker(self):
@@ -139,17 +135,6 @@ def forward_shutdown_to_workers(self):
         if worker in self.worker_data["dead_workers"]:
             continue
         tcp_client(worker_host, worker_port, message)
-            # LOGGER.info(
-            #     f"Sent shutdown to worker {worker_host}:{worker_port}"
-            # )
-            # else:
-            #     LOGGER.info(
-            #         f"tcp fail sd msg to wrkr {worker_host}:{worker_port}"
-            #     )
-        # except Exception as e:
-        #     LOGGER.warning(
-        #         f"failed send sd to wrkr {worker_host}:{worker_port}: {e}"
-        #     )
 
 
 def manager_tcp_server(self, host, port):
@@ -430,8 +415,6 @@ def job_queue(self):
             # LOGGER.info("DONE REDUCING!")
             if os.path.exists(job_tmpdir_path):
                 shutil.rmtree(job_tmpdir_path)
-                # LOGGER.info(f"Deleted temporary directory for job "
-                        # f"{self.config["job"].job_id}: {job_tmpdir_path}")
         time.sleep(1)
 
 
@@ -456,6 +439,7 @@ def main(host, port, logfile, loglevel, shared_dir):
     root_logger.addHandler(handler)
     root_logger.setLevel(loglevel.upper())
     Manager(host, port)
+
 
 if __name__ == "__main__":
     main()

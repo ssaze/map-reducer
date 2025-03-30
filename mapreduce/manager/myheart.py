@@ -66,7 +66,9 @@ def check_heartbeats(self):
     """Check heartbeats every few seconds."""
     while not self.threading_data["shutdown_event"].is_set():
         current_time = time.time()
-        for worker, last_heartbeat in self.worker_data["worker_heartbeats"].items():
+        for worker, last_heartbeat in (
+            self.worker_data["worker_heartbeats"].items()
+        ):
             if current_time - last_heartbeat > 10:
                 # LOGGER.warning(f"Worker {worker} has missed {5}
                 # heartbeats and is assumed dead.")

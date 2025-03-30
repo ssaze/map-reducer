@@ -7,6 +7,7 @@ from mapreduce.utils.ordered_dict import OrderedDict
 
 class JobPhase(Enum):
     """Enumeration for the job phase."""
+
     MAPPING = "mapping"
     REDUCING = "reducing"
     DONE = "done"
@@ -133,8 +134,6 @@ class Job:
 
         if task_id not in self.task_reference_dict:
             self.task_reference_dict[task_id] = task
-        # else:
-            # LOGGER.warning(f"Task {task_id} is already in task_reference_dict.")
 
     def get_task(self):
         """Retrieve the next task for assignment, if available."""

@@ -33,7 +33,7 @@ end
 # Unset irrelevant variables.
 deactivate nondestructive
 
-set -gx VIRTUAL_ENV /Users/kyp/eecs485/p4-map-reduce/map-reducer/env
+set -gx VIRTUAL_ENV /Users/sarahzhang/Desktop/485/p4/env
 
 set -gx _OLD_VIRTUAL_PATH $PATH
 set -gx PATH "$VIRTUAL_ENV/"bin $PATH
