@@ -3,11 +3,13 @@ import socket
 import json
 import logging
 import time
-from mapreduce.manager.job import *
+from mapreduce.manager.job import Job
 from mapreduce.utils.servers import tcp_client
 from mapreduce.manager.myheart import handle_dead_worker
 
 LOGGER = logging.getLogger(__name__)
+
+
 def manager_tcp_server(self, host, port):
     """Test TCP Socket Server."""
     # Create an INET, STREAMing socket, this is TCP
@@ -18,10 +20,11 @@ def manager_tcp_server(self, host, port):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))
         sock.listen()
-        sock.settimeout(1) # tutorial
+        sock.settimeout(1)  # tutorial
 
         while not self.shutdown_event.is_set():
-            # Wait for a connection for 1s.  The socket library avoids consuming
+            # Wait for a connection for 1s.  The socket library
+            # avoids consuming
             # CPU while waiting for a connection.
             try:
                 clientsocket, address = sock.accept()
@@ -29,8 +32,8 @@ def manager_tcp_server(self, host, port):
                 continue
             print("Connection from", address[0])
 
-            # Socket recv() will block for a maximum of 1 second.  If you omit
-            # this, it blocks indefinitely, waiting for packets.
+            # Socket recv() will block for a maximum of 1 second.
+            # If you omit this, it blocks indefinitely, waiting for packets.
             clientsocket.settimeout(1)
 
             # Receive data, one chunk at a time.  If recv() times out before we
@@ -61,14 +64,15 @@ def manager_tcp_server(self, host, port):
                 continue
             print(message_dict)
 
+
 def message_handler(self, message_dict):
+    """Handle diff msg types for manager."""
     message_type = message_dict["message_type"]
 
     if message_type == "shutdown":
         LOGGER.info("Received shutdown request")
         self.forward_shutdown_to_workers()
         self.shutdown_event.set()
-        return
 
     elif message_type == "register":
         worker_host = message_dict["worker_host"]
@@ -86,9 +90,8 @@ def message_handler(self, message_dict):
             self.worker_heartbeats[worker_key] = time.time()
         else:
             handle_dead_worker(self, worker_key)
-            LOGGER.error("Registered worker unreachable as ack was being sent")
-            
-
+            LOGGER.error("Registered worker unreachable as \
+                          ack was being sent")
 
     elif message_type == "new_manager_job":
         job_id = self.next_job_id
@@ -106,10 +109,11 @@ def message_handler(self, message_dict):
         self.job_queue.append(job)
         with self.new_job_alert_condition:
             self.new_job_alert_condition.notify_all()
-        LOGGER.info(f"Received job {job_id} with {job.num_mappers} mappers, {job.num_reducers} reducers, and queued it.")
-    
+        # LOGGER.info(f"Received job {job_id} with {job.num_mappers} mappers, \
+        #             {job.num_reducers} reducers, and queued it.")
+
     elif message_type == "finished":
-        LOGGER.info(f"TASK MARKED COMPLETED")
+        LOGGER.info(+"TASK MARKED COMPLETED")
         # "message_type": "finished",
         # "task_id": int,
         # "worker_host": string,
@@ -118,13 +122,14 @@ def message_handler(self, message_dict):
         task_id = message_dict["task_id"]
 
         if worker in self.busy_workers.keys():
-            LOGGER.info(f"REMOVING {worker} FROM BUSY WORKERS")
+            # LOGGER.info(f"REMOVING {worker} FROM BUSY WORKERS")
             del self.busy_workers[worker]
         else:
-            LOGGER.info(f"SUPPOSED TO REMOVE WORKER {worker} FROM BUSY, DID NOT FIND WORKER")
+            LOGGER.info("SUPPOSED TO remove worker but not found")
 
         self.job.task_finished(task_id)
-        LOGGER.info(f"Worker {worker} completed task {task_id}.")
+        # LOGGER.info(f"Worker {worker} completed task {task_id}.")
 
     else:
-        LOGGER.error("something terrible has happened we got a bad message type in message_handler")
+        LOGGER.error("something terrible has happened we got a\
+                      bad message type in message_handler")
