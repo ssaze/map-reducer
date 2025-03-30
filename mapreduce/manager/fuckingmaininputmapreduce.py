@@ -61,7 +61,7 @@ def start_mapping(self, string_partitions):
                     # worker dead
 
         LOGGER.info("waiting for worker or task in manager mapping")
-        time.sleep(2)
+        time.sleep(1)
     LOGGER.info("EXITED START_MAPPING WHILE LOOP")
 
 def start_reducing(self):
@@ -116,7 +116,7 @@ def start_reducing(self):
                     
 
         LOGGER.info("waiting for worker or task in manager reducing")
-        time.sleep(2)
+        time.sleep(1)
     LOGGER.info("EXITED START_REDUCING WHILE LOOP")
 
 def job_queue(self):
