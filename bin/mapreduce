@@ -19,12 +19,13 @@ check_status() {
     if pgrep -f mapreduce-worker > /dev/null; then
         worker=1
     fi
-    echo $status
+
+    echo $(( manager | (worker << 1) ))
 }
 
 
 
-start_server() {
+start_server () {
     
     local status
     status=$(check_status)
@@ -42,21 +43,21 @@ start_server() {
     mapreduce-worker --host localhost --port 6002 --manager-host localhost --manager-port 6000 --logfile var/log/worker-6002.log &
 }
 
-stop_server() {
+stop_server () {
     mapreduce-submit --shutdown --host localhost --port 6000
     sleep 2  # give the Manager time to receive signal and send to Workers
 
     if pgrep -f mapreduce-manager &> /dev/null; then
-    echo "killing mapreduce manager ..."
-    pkill -f mapreduce-manager || true
+        echo "killing mapreduce manager ..."
+        pkill -f mapreduce-manager || true
     fi
     if pgrep -f mapreduce-worker &> /dev/null; then
-    echo "killing mapreduce worker ..."
-    pkill -f mapreduce-worker || true
+        echo "killing mapreduce worker ..."
+        pkill -f mapreduce-worker || true
     fi
 }
 
-status_server() {
+status_server () {
     manager_running=0
     worker_running=0
 
@@ -96,8 +97,7 @@ elif [ $1 == "stop" ]; then
 elif [ $1 == "status" ]; then
     server_status
 elif [ $1 == "restart" ]; then
-    server_stop
-    server_start
+    restart_server
 else
     exit 1
 fi

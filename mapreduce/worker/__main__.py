@@ -1,4 +1,4 @@
-"""MapReduce framework Manager node."""
+"""MapReduce framework Worker node."""
 import os
 import socket
 import logging
@@ -7,182 +7,68 @@ import time
 import hashlib
 import subprocess
 import tempfile
+import pathlib
 import shutil
 import threading
+import heapq
 import socket
 import click
 import sys
-import mapreduce.utils
+from mapreduce.utils.servers import *
 #if something is failing its logfile and loglevel in worker overview
+
 
 # Configure logging
 LOGGER = logging.getLogger(__name__)
 
 
 class Worker:
-    """Represent a MapReduce framework Manager node."""
-
+    
     def __init__(self, host, port, manager_host, manager_port):
-        """Construct a Manager instance and start listening for messages."""
-
-        LOGGER.info(
-            "Starting manager host=%s port=%s pwd=%s",
-            host, port, os.getcwd(),
-        )
-
+        """Init."""
         self.host = host
         self.port = port
         self.manager_host = manager_host
         self.manager_port = manager_port
-        self.shutdown_event = threading.Event();
 
-        # Step 1: Create listener socket (within a `with` so test sees __enter__ calls)
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            listener.bind((host, port))
-            listener.listen()
-            self.listener_socket = listener  # store ref so you can .accept() elsewhere
+        self.registered = False
+        self.alive = True
+        self.shutdown = threading.Event()
+        self.alive_threads = []
 
-            LOGGER.info(f"Listener socket created and bound to {host}:{port}")
+        LOGGER.info("Starting worker host=%s port=%s pwd=%s", host, port, os.getcwd())
+        LOGGER.info("manager_host=%s manager_port=%s", manager_host, manager_port)
 
-            # Step 2: Register with Manager (in second socket `with`)
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.connect((manager_host, manager_port))
-                register_msg = {
-                    "message_type": "register",
-                    "worker_host": host,
-                    "worker_port": port,
-                }
-                sock.sendall(json.dumps(register_msg).encode("utf-8"))
-                response_raw = sock.recv(4096)
-                decoded = response_raw.decode('utf-8')
-            
-            
-            
-            # Handle test mocks or invalid responses gracefully
-            if not isinstance(decoded, str):
-                LOGGER.warning("Detected mocked decode() result, skipping JSON parsing")
-                response = {"message_type": "register_ack"}  # Default fallback for test
-            else:
-                try:
-                    response = json.loads(decoded)
-                except json.JSONDecodeError:
-                    LOGGER.warning("Failed to decode register_ack, skipping...")
-                    response = {}
-                    
-                if response.get("message_type") == "register_ack":
-                    LOGGER.info("Registration successful")
+        # Launch TCP listener in a separate thread
+        #i abstracted this because i personally think it makes the code more readable
+        self._start_tcp_thread()
 
-                    # self.heartbeat_thread = threading.Thread(
-                    #     target=self.send_heartbeats,
-                    #     daemon=True
-                    # )
+        # Send registration message to the manager
+        self._send_registration()
 
-                    LOGGER.info("Started heartbeat thread")
-                    # Store the listener socket
-
-                    self.listener_thread = threading.Thread(target=self.listen_for_tasks, daemon=True)
-                    self.listener_thread.start()
-                    LOGGER.info("Started listener thread to accept tasks")
-                    
-                elif response.get("message_type") == "shutdown":
-                    self.shutdown.set();
-                    self.heartbeat_thread.join();
-                    sys.exit(0)
-                else:
-                    LOGGER.warning("Registration failed or unexpected response")
-
-                # Prevent exit (for now) — will be replaced later
-                import time
-                time.sleep(2)
+        # Wait for all threads to finish
+        self._wait_for_threads()
 
 
-    def send_heartbeats(self):
-        """Send heartbeat messages every 10 seconds via UDP."""
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_sock:
-            while not self.heartbeat_shutdown_event.is_set():
-                # Wait up to 10s (can exit early if shutdown_event is set)
-                if self.heartbeat_shutdown_event.wait(timeout=10):
-                    break
-
-                heartbeat_msg = {
-                    "message_type": "heartbeat",
-                    "worker_host": self.host,
-                    "worker_port": self.port,
-                }
-                message_bytes = json.dumps(heartbeat_msg).encode("utf-8")
-
-                try:
-                    udp_sock.sendto(message_bytes, (self.manager_host, self.manager_port))
-                    LOGGER.debug(f"Sent heartbeat: {heartbeat_msg}")
-                except Exception as e:
-                    LOGGER.warning(f"Failed to send heartbeat: {e}")
-                
+    def _start_tcp_thread(self):
+        thread = threading.Thread(target=self.startTCP)
+        self.alive_threads.append(thread)
+        thread.start()
 
 
-
-    def listen_for_tasks(self):
-        LOGGER.info("Listen for tasks")
-        while not self.shutdown_event.is_set():
-            conn, addr = self.listener_socket.accept()
-            with conn:
-                message_chunks = []
-                while True:
-                    try:
-                        data = conn.recv(4096)
-                    except socket.timeout:
-                        continue
-                    if not data:
-                        break
-                    message_chunks.append(data)
-
-                message_bytes = b''.join(message_chunks)
-                message = message_bytes.decode("utf-8")
-
-                LOGGER.info("did u enter")
-                LOGGER.info("fuck you %s", message)
-
-                if type(message) is type(None):
-                    LOGGER.info("fuck you", {message}) 
-                else:
-                    try:
-                        msg_dict = json.loads(message)
-                        LOGGER.info("dick")
-
-                        if msg_dict.get("message_type") == "new_map_task":
-                            LOGGER.info(f"PONGO")
-                            self.handle_map_task(msg_dict)
-                        LOGGER.info("yuh mf")
-                    except json.JSONDecodeError:
-                        LOGGER.warning("Received invalid JSON")
-                LOGGER.info("fjeiowajf")
-
-    def handle_map_task(self, task):
-        task_id = task["task_id"]
-        input_paths = task["input_paths"]
-        executable = task["executable"]
-        output_dir = task["output_directory"]
-        num_partitions = task["num_partitions"]
-
-        with tempfile.TemporaryDirectory(prefix=f"mapreduce-local-task{task_id:05d}-") as tmpdir:
-            for input_path in input_paths:
-                with open(input_path) as infile:
-                    with subprocess.Popen([executable], stdin=infile, stdout=subprocess.PIPE, text=True) as proc:
-                        for line in proc.stdout:
-                            if '\t' not in line:
-                                continue
-                            key, _ = line.split('\t', 1)
-                            part = self.partition(key, num_partitions)
-                            part_file = os.path.join(tmpdir, f"maptask{task_id:05d}-part{part:05d}")
-                            with open(part_file, "a") as pf:
-                                pf.write(line)
-            for filename in os.listdir(tmpdir):
-                path = os.path.join(tmpdir, filename)
-                subprocess.run(["sort", "-o", path, path], check=True)
-                shutil.move(path, os.path.join(output_dir, filename))
+    def _send_registration(self):
+        registration_msg = json.dumps({
+            "message_type": "register",
+            "worker_host": self.host,
+            "worker_port": self.port
+        })
+        tcp_connect(self.manager_host, self.manager_port, registration_msg)
 
 
-        self.notify_finished(task_id)
+    def _wait_for_threads(self):
+        for thread in self.alive_threads:
+            thread.join()
+
 
     def partition(self, key, num_partitions):
         import hashlib
@@ -191,16 +77,196 @@ class Worker:
         partition_number = keyhash % num_partitions
         return partition_number
 
+    
+    def handle_map_task(self, task_info): #unsafe
+        def sort_and_close_file(f):
+            f.seek(0)
+            lines = f.readlines()
+            lines.sort()
+            f.seek(0)
+            f.writelines(lines)
+            f.close()
+
+
+        task_id = task_info["task_id"]
+        input_files = task_info["input_paths"]
+        exe = task_info["executable"]
+        output_dir = task_info["output_directory"]
+        num_parts = task_info["num_partitions"]
+
+        temp = f"mapreduce-local-task{task_id:05d}-"
+
+        with tempfile.TemporaryDirectory(prefix=temp) as temp_dir:
+            file_handles = [None] * num_parts
+            file_paths = [None] * num_parts
+
+            for path in input_files:
+                with open(path) as infile:
+                    with subprocess.Popen([exe], stdin=infile, stdout=subprocess.PIPE, text=True) as proc:
+
+                        for line in proc.stdout:
+                            if "\t" not in line:
+                                continue
+                            
+                            key, _ = line.split('\t', 1)
+                            partition_id = self.partition(key, num_parts)
+
+                            handle = file_handles[partition_id]
+
+                            if handle is None:
+                                name = f"maptask{task_id:05d}-part{partition_id:05d}"
+                                path = os.path.join(temp_dir, name)
+                                handle = open(path, "w+")
+                                file_handles[partition_id] = handle
+                                file_paths[partition_id] = path
+
+                            handle.write(line)
+
+            for f in file_handles:
+                if f:
+                    sort_and_close_file(f)
+
+            shutil.copytree(temp_dir, output_dir, dirs_exist_ok=True)
+        
+
+    def handle_reduce_task(self, dictionary): #unsafe
+        task_id = dictionary['task_id']
+        prefix = f"mapreduce-local-task{task_id:05d}-"
+
+        with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
+            # Pipe executable input
+            # Pipe input from memory to the reduce executable. Merge the sorted intermediate files using heapq.merge().
+            # Pipe the output of heapq.merge() into the subprocess’s stdin. Do not write the merge output to file.
+
+            # Use the Python standard library subprocess.Popen class to run the reduce executable in a new process.
+            # The input should be the output of heapq.merge(). The output is a file.
+            # We’ve provided sample code below, which you’ll need to augment with a call to heapq.merge().
+
+            executable = dictionary['executable']  # reduce executable
+            instreams = [open(path) for path in dictionary['input_paths']]  # merged input files
+            merged_stream = heapq.merge(*instreams)
+            outfile_path = os.path.join(tmpdir, f"part-{task_id:05d}")
+            outfile = open(outfile_path, "w")  # open output file
+
+            with subprocess.Popen(
+                [executable],
+                text=True,
+                stdin=subprocess.PIPE,
+                stdout=outfile,
+            ) as reduce_process:
+                # Pipe input to reduce_process
+                for line in merged_stream:
+                    reduce_process.stdin.write(line)
+
+            # Close input streams
+            for f in instreams:
+                f.close()
+
+            # Move output file to final output directory specified by the Manager
+            shutil.copytree(tmpdir, dictionary['output_directory'], dirs_exist_ok=True)
+
+
     def notify_finished(self, task_id):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.connect((self.manager_host, self.manager_port))
-            msg = {
-                "message_type": "finished",
-                "task_id": task_id,
-                "worker_host": self.host,
-                "worker_port": self.port
-            }
-            sock.sendall(json.dumps(msg).encode("utf-8"))
+        message = json.dumps({
+            "message_type": "finished",
+            "task_id": task_id,
+            "worker_host": self.host,
+            "worker_port": self.port
+        })
+        tcp_connect(self.manager_host, self.manager_port, message)
+
+
+    def startTCP(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
+            server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server_sock.bind((self.host, self.port))
+            server_sock.listen()
+            server_sock.settimeout(1)
+
+            while self.alive:
+                try:
+                    clientsocket, address = server_sock.accept()
+                except socket.timeout:
+                    continue
+                print("Connection from", address[0])
+            
+                # Socket recv() will block for a maximum of 1 second.  If you omit
+                # this, it blocks indefinitely, waiting for packets.
+                clientsocket.settimeout(1)
+                with clientsocket:
+                    message_chunks = []
+                    while True:
+                        try:
+                            data = clientsocket.recv(4096)
+                        except socket.timeout:
+                            continue
+                        if not data:
+                            break
+                        message_chunks.append(data)
+
+                try:
+                    message_bytes = b''.join(message_chunks)
+                    message_string = message_bytes.decode("utf-8")
+                    dictionary = json.loads(message_string)
+                except json.JSONDecodeError:
+                    continue
+
+                # ⬇️ Dispatch message to appropriate handler
+                self._handle_message(dictionary)
+
+
+    def start_heartbeats(self): #unsafe
+        destination = (self.manager_host, self.manager_port)
+        heartbeat = json.dumps({
+            "message_type": "heartbeat",
+            "worker_host": self.host,
+            "worker_port": self.port
+        })
+        while self.alive and self.registered:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                try:
+                    sock.connect((destination))
+                    sock.sendall(heartbeat.encode('utf-8'))
+                except Exception as err:
+                    LOGGER.warning(f"Failed to send heartbeat: {err}")
+            time.sleep(2)
+
+
+    def _handle_message(self, msg):
+        msg_type = msg.get("message_type")
+        handler_map = {
+            "register_ack": self._handle_register_ack,
+            "shutdown": self._handle_shutdown,
+            "new_map_task": lambda: self._handle_task(self.handle_map_task, msg),
+            "new_reduce_task": lambda: self._handle_task(self.handle_reduce_task, msg),
+        }
+
+        handler = handler_map.get(msg_type)
+        if handler:
+            handler()
+        else:
+            LOGGER.warning(f"Unknown message type: {msg_type}")
+
+        time.sleep(0.1)
+
+    def _handle_register_ack(self):
+        LOGGER.info("Registration successful")
+        self.registered = True
+        heartbeat_thread = threading.Thread(target=self.start_heartbeats)
+        heartbeat_thread.start()
+        self.alive_threads.append(heartbeat_thread)
+
+    def _handle_shutdown(self):
+        self.alive = False
+        self.shutdown.set()
+        # sys.exit(0)
+        # sends warnings for some reason
+
+    def _handle_task(self, task_func, msg):
+        LOGGER.info(f"Handling {msg['message_type']}")
+        task_func(msg)
+        self.notify_finished(msg["task_id"])
+        LOGGER.info(f"Finished {msg['message_type']}")
 
 
 @click.command()

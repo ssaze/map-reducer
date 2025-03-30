@@ -9,9 +9,11 @@ mapreduce.egg-info/requires.txt
 mapreduce.egg-info/top_level.txt
 mapreduce/manager/__init__.py
 mapreduce/manager/__main__.py
+mapreduce/manager/fuckingmaininputmapreduce.py
 mapreduce/manager/job.py
 mapreduce/utils/__init__.py
 mapreduce/utils/ordered_dict.py
+mapreduce/utils/servers.py
 mapreduce/worker/__init__.py
 mapreduce/worker/__main__.py
 mapreduce/worker/workerreducer.py
