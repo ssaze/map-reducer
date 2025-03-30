@@ -43,8 +43,10 @@ class Manager:
             "dead_workers": set(),
         }
 
-        self.shutdown_event = threading.Event()
-        self.new_job_alert_condition = threading.Condition()
+        self.threading_data = {
+            'shutdown_event': threading.Event(),
+            'new_job_alert_condition': threading.Condition()
+        }
 
         self.job_queue = deque()
         self.next_job_id = 0
@@ -88,7 +90,7 @@ class Manager:
                 thread.start()
 
             try:
-                self.shutdown_event.wait()
+                self.threading_data["shutdown_event"].wait()
             except KeyboardInterrupt:
                 LOGGER.info("Shutdown signal received.")
             finally:
@@ -157,7 +159,7 @@ def manager_tcp_server(self, host, port):
         sock.listen()
         sock.settimeout(1)  # tutorial
 
-        while not self.shutdown_event.is_set():
+        while not self.threading_data["shutdown_event"].is_set():
             # Wait for a connection for 1s.  The socket library
             # avoids consuming
             # CPU while waiting for a connection.
@@ -207,7 +209,7 @@ def message_handler(self, message_dict):
     if message_type == "shutdown":
         LOGGER.info("Received shutdown request")
         forward_shutdown_to_workers(self)
-        self.shutdown_event.set()
+        self.threading_data["shutdown_event"].set()
 
     elif message_type == "register":
         worker_host = message_dict["worker_host"]
@@ -242,8 +244,8 @@ def message_handler(self, message_dict):
             message_dict["num_reducers"]
         )
         self.job_queue.append(job)
-        with self.new_job_alert_condition:
-            self.new_job_alert_condition.notify_all()
+        with self.threading_data["new_job_alert_condition"]:
+            self.threading_data["new_job_alert_condition"].notify_all()
         # LOGGER.info(f"Received job {job_id} with {job.num_mappers} mappers, \
         #             {job.num_reducers} reducers, and queued it.")
 
@@ -301,10 +303,10 @@ def start_mapping(self, string_partitions):
         self.config["job"].add_task(task_id, task_message)
     # LOGGER.info("Added all partitions to job tasks list!")
 
-    # LOGGER.info(f"NOTIFS: {self.shutdown_event.is_set()}, "
+    # LOGGER.info(f"NOTIFS: {self.threading_data["shutdown_event"].is_set()}, "
     #             f"{self.config["job"].mapping_finished_event.is_set()}")
     while (
-        not self.shutdown_event.is_set() and
+        not self.threading_data["shutdown_event"].is_set() and
         not self.config["job"].mapping_finished_event.is_set()
     ):
         worker = get_available_worker(self)
@@ -360,7 +362,7 @@ def start_reducing(self):
     # LOGGER.info("Reducing tasks added to job class")
 
     while (
-        not self.shutdown_event.is_set() and
+        not self.threading_data["shutdown_event"].is_set() and
         not self.config["job"].reducing_finished_event.is_set()
     ):
         worker = get_available_worker(self)
@@ -388,10 +390,10 @@ def start_reducing(self):
 
 def job_queue(self):
     """Jq."""
-    while not self.shutdown_event.is_set():
-        with self.new_job_alert_condition:
+    while not self.threading_data["shutdown_event"].is_set():
+        with self.threading_data["new_job_alert_condition"]:
             while not self.job_queue:
-                self.new_job_alert_condition.wait()
+                self.threading_data["new_job_alert_condition"].wait()
                 # LOGGER.info("New job added, new_job_alert_condition alerted")
 
             self.config["job"] = self.job_queue.popleft()
