@@ -51,14 +51,14 @@ def manager_udp_server(self, host, port):
 def handle_heartbeat(self, worker):
     """If heartbeat is received then process it."""
     current_time = time.time()
-    if worker not in self.workers:
+    if worker not in self.worker_data["workers"]:
         # LOGGER.info(f"heartbeat from unregistered {worker} skipped (spec)")
         return
-    if worker in self.dead_workers:
+    if worker in self.worker_data["dead_workers"]:
         # LOGGER.info(f"Worker {worker} revived.")
-        self.dead_workers.remove(worker)
+        self.worker_data["dead_workers"].remove(worker)
 
-    self.worker_heartbeats[worker] = current_time
+    self.worker_data["worker_heartbeats"][worker] = current_time
     # LOGGER.info(f"Received heartbeat from worker {worker} at {current_time}")
 
 
@@ -67,7 +67,7 @@ def check_heartbeats(self):
     """Check heartbeats every few seconds."""
     while not self.shutdown_event.is_set():
         current_time = time.time()
-        for worker, last_heartbeat in self.worker_heartbeats.items():
+        for worker, last_heartbeat in self.worker_data["worker_heartbeats"].items():
             if current_time - last_heartbeat > 10:
                 # LOGGER.warning(f"Worker {worker} has missed {5}
                 # heartbeats and is assumed dead.")
@@ -78,25 +78,25 @@ def check_heartbeats(self):
 def handle_dead_worker(self, worker):
     """Deal with dead workers and reassign tasks."""
     # marking dead
-    if worker in self.worker_heartbeats:
-        del self.worker_heartbeats[worker]
-    self.dead_workers.add(worker)
+    if worker in self.worker_data["worker_heartbeats"]:
+        del self.worker_data["worker_heartbeats"][worker]
+    self.worker_data["dead_workers"].add(worker)
 
-    if worker in self.busy_workers.keys():
+    if worker in self.worker_data["busy_workers"].keys():
         # had task assigned to it. need to reassign
-        del self.busy_workers[worker]
+        del self.worker_data["busy_workers"][worker]
 
         # find its task id
         matching_task_ids = [id for id, val in
-                             self.job.in_progress_tasks.items()
+                             self.config["job"].in_progress_tasks.items()
                              if val == worker]
         # LOGGER.info(f"Matching task ids for dead worker (should only be 1):
         #  {matching_task_ids}")
         matching_id = matching_task_ids[0]
 
         # need to reassign
-        task_dict = self.job.task_reference_dict[matching_id]
+        task_dict = self.config["job"].task_reference_dict[matching_id]
         # corresponding task msg
         # LOGGER.info(f"Reassigning task {task_dict}.
         # Should have task_id in here")
-        self.job.reset_task(task_dict)
+        self.config["job"].reset_task(task_dict)
