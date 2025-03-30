@@ -1,75 +1,19 @@
-Manager:6000 [INFO] Created tmpdir /var/folders/9r/f_wtt85s4tnc77jpm2t7ymt40000gn/T/mapreduce-shared-c6hofzfn
-Manager:6000 [INFO] Registering Worker ('localhost', 6001)
-Manager:6000 [INFO] Sent ack to worker
+Manager:6000 [INFO] Created tmpdir /var/folders/9r/f_wtt85s4tnc77jpm2t7ymt40000gn/T/mapreduce-shared-xwd0mytc
 Manager:6000 [INFO] Registering Worker ('localhost', 6002)
 Manager:6000 [INFO] Sent ack to worker
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309745.8608818
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309745.861137
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309747.8666859
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309747.867241
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309749.8716722
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309749.872073
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309751.873569
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309751.873953
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309753.8786619
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309753.87902
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309755.882773
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309755.8831449
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309757.88773
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309757.888094
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309759.8890932
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309759.892235
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309761.892554
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309761.8945029
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309763.89845
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309763.8987782
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309765.90162
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309765.901771
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309767.9069781
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309767.907112
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309769.9134269
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309769.913812
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309771.917464
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309771.918004
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309773.923002
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309773.923193
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309775.92527
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309775.925419
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309777.931037
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309777.931375
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309779.936918
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309779.9372602
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309781.9405792
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309781.94181
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309783.946295
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309783.946592
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309785.952449
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309785.952841
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309787.9564831
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309787.957712
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309789.9626188
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309789.962987
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309791.968653
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309791.969076
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309793.9719481
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309793.9723651
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309795.97549
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309795.9758239
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309797.979116
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309797.9812531
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309799.984399
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309799.98476
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309801.989262
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309801.989609
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309803.9930549
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309803.9950662
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309805.993877
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309805.999737
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309807.999657
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309808.006701
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743309810.0055249
-Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743309810.013574
+Manager:6000 [INFO] Registering Worker ('localhost', 6001)
+Manager:6000 [INFO] Sent ack to worker
+Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743312840.442782
+Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743312840.442991
+Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743312842.44907
+Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743312842.449595
+Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743312844.4525619
+Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743312844.452798
+Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743312846.4555469
+Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743312846.457547
+Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6001) at 1743312848.460959
+Manager:6000 [INFO] Received heartbeat from worker ('localhost', 6002) at 1743312848.461329
 Manager:6000 [INFO] Received shutdown request
-Manager:6000 [INFO] Sent shutdown message to worker localhost:6001
 Manager:6000 [INFO] Sent shutdown message to worker localhost:6002
+Manager:6000 [INFO] Sent shutdown message to worker localhost:6001
 Manager:6000 [INFO] Manager shutting down

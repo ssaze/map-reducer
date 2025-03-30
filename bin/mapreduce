@@ -28,7 +28,7 @@ start_server () {
 }
 
 stop_server () {
-    mapreduce-submit --shutdown --host localhost --port 6000
+    mapreduce-submit --shutdown --host localhost --port 6000 || true
     sleep 2  # give the Manager time to receive signal and send to Workers
 
     if pgrep -f mapreduce-manager &> /dev/null; then
@@ -82,5 +82,6 @@ elif [ $1 == "status" ]; then
     status_server
 elif [ $1 == "restart" ]; then
     stop_server
+    sleep 2
     start_server
 fi
