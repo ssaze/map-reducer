@@ -1,25 +1,24 @@
 """Example TCP socket server."""
 import socket
 import json
-import pdb
-from enum import Enum
-import socket
-import json
 
 import logging
 LOGGER = logging.getLogger(__name__)
 
+
 def tcp_connect(host, port, mesg):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            try:
-                sock.connect((host, port))
-                sock.sendall(mesg.encode('utf-8'))
-                return True
-            except ConnectionRefusedError:
-                return False
+    """Send a TCP message."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.connect((host, port))
+            sock.sendall(mesg.encode('utf-8'))
+            return True
+        except ConnectionRefusedError:
+            return False
+
 
 def tcp_server(host, port, shutdown_event):
-    """Test TCP Socket Server."""
+    """Tutorial code, here just to show."""
     # Create an INET, STREAMing socket, this is TCP
     # Note: context manager syntax allows for sockets to automatically be
     # closed when an exception is raised or control flow returns.
@@ -28,10 +27,11 @@ def tcp_server(host, port, shutdown_event):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))
         sock.listen()
-        sock.settimeout(1) # tutorial
+        sock.settimeout(1)  # tutorial
 
         while not shutdown_event.is_set():
-            # Wait for a connection for 1s.  The socket library avoids consuming
+            # Wait for a connection for 1s.  The socket library
+            # avoids consuming
             # CPU while waiting for a connection.
             try:
                 clientsocket, address = sock.accept()
@@ -72,6 +72,7 @@ def tcp_server(host, port, shutdown_event):
                 continue
             print(message_dict)
 
+
 def tcp_client(host, port, message_json):
     """Test TCP Socket Client."""
     # create an INET, STREAMing socket, this is TCP
@@ -86,5 +87,6 @@ def tcp_client(host, port, message_json):
             sock.sendall(message.encode('utf-8'))
         return True
     except ConnectionRefusedError:
-        LOGGER.warning(f"Worker {host}:{port} is unreachable. Marking as dead.")
+        # LOGGER.warning(f"Worker {host}:{port} is \
+        # unreachable. Marking as dead.")
         return False
