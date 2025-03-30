@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import shutil
 import threading
+from contextlib import ExitStack
 import heapq
 import click
 from mapreduce.utils.servers import tcp_connect, receive_json_message
@@ -137,37 +138,30 @@ class Worker:
         prefix = f"mapreduce-local-task{task_id:05d}-"
 
         with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
-            # Open input streams with context managers
             executable = dictionary['executable']
-
-            # Use with statements for file operations
-            instreams = []
-            for path in dictionary['input_paths']:
-                instreams.append(open(path, encoding="utf-8"))
-
-            # Merge sorted input files
-            merged_stream = heapq.merge(*instreams)
             outfile_path = os.path.join(tmpdir, f"part-{task_id:05d}")
 
-            # Use with statement for output file
-            with open(outfile_path, "w", encoding="utf-8") as outfile:
-                with subprocess.Popen(
-                    [executable],
-                    text=True,
-                    stdin=subprocess.PIPE,
-                    stdout=outfile,
-                ) as reduce_process:
-                    # Pipe input to reduce_process
-                    for line in merged_stream:
-                        reduce_process.stdin.write(line)
+            # Open all input files safely using ExitStack
+            with ExitStack() as stack:
+                instreams = [
+                    stack.enter_context(open(path, encoding="utf-8"))
+                    for path in dictionary['input_paths']
+                ]
 
-            # Close input streams
-            for f in instreams:
-                f.close()
+                merged_stream = heapq.merge(*instreams)
 
-            # Move output file to final output directory
-            shutil.copytree(tmpdir, dictionary['output_directory'],
-                            dirs_exist_ok=True)
+                with open(outfile_path, "w", encoding="utf-8") as outfile:
+                    with subprocess.Popen(
+                        [executable],
+                        text=True,
+                        stdin=subprocess.PIPE,
+                        stdout=outfile,
+                    ) as reduce_process:
+                        for line in merged_stream:
+                            reduce_process.stdin.write(line)
+
+            # Copy to output directory after closing files
+            shutil.copytree(tmpdir, dictionary['output_directory'], dirs_exist_ok=True)
 
     def notify_finished(self, task_id):
         """Send a completion message to the manager for a finished task."""
