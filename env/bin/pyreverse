@@ -1,4 +1,4 @@
-#!/Users/kyp/eecs485/p4-map-reduce/map-reducer/env/bin/python3.12
+#!/Users/sarahzhang/Desktop/485/p4/env/bin/python
 # -*- coding: utf-8 -*-
 import re
 import sys
