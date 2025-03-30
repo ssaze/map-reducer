@@ -113,7 +113,7 @@ def message_handler(self, message_dict):
         #             {job.num_reducers} reducers, and queued it.")
 
     elif message_type == "finished":
-        LOGGER.info(+"TASK MARKED COMPLETED")
+        LOGGER.info("TASK MARKED COMPLETED")
         # "message_type": "finished",
         # "task_id": int,
         # "worker_host": string,
