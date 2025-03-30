@@ -51,7 +51,7 @@ class Worker:
 
 
     def _start_tcp_thread(self):
-        thread = threading.Thread(target=self.startTCP)
+        thread = threading.Thread(target=self.startTCP,daemon=True)
         self.alive_threads.append(thread)
         thread.start()
 
@@ -245,7 +245,7 @@ class Worker:
     def _handle_register_ack(self):
         LOGGER.info("Registration successful")
         self.registered = True
-        heartbeat_thread = threading.Thread(target=self.start_heartbeats)
+        heartbeat_thread = threading.Thread(target=self.start_heartbeats, daemon=True)
         heartbeat_thread.start()
         self.alive_threads.append(heartbeat_thread)
 
