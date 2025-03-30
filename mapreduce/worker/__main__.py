@@ -11,8 +11,7 @@ import shutil
 import threading
 import heapq
 import click
-# Import specific functions instead of wildcard import
-from mapreduce.utils.servers import tcp_connect
+from mapreduce.utils.servers import tcp_connect, receive_json_message
 
 # Configure logging
 LOGGER = logging.getLogger(__name__)
@@ -22,14 +21,7 @@ class Worker:
     """MapReduce worker node implementation."""
 
     def __init__(self, host, port, manager_host, manager_port):
-        """Initialize the worker with network information and state tracking.
-        
-        Args:
-            host: Worker's hostname or IP
-            port: Worker's port number
-            manager_host: Manager's hostname or IP
-            manager_port: Manager's port number
-        """
+        """Initialize."""
         self.host = host
         self.port = port
         self.manager_host = manager_host
@@ -69,27 +61,14 @@ class Worker:
             thread.join()
 
     def partition(self, key, num_partitions):
-        """Determine the partition for a key using MD5 hashing.
-        
-        Args:
-            key: The key to partition
-            num_partitions: Number of available partitions
-            
-        Returns:
-            int: The partition number (0 to num_partitions-1)
-        """
+        """Determine the partition for a key using MD5 hashing."""
         hexdigest = hashlib.md5(key.encode("utf-8")).hexdigest()
         keyhash = int(hexdigest, base=16)
         partition_number = keyhash % num_partitions
         return partition_number
 
-
     def handle_map_task(self, task_info):
-        """Process a map task from the manager.
-
-        Args:
-            task_info: Dictionary containing map task parameters
-        """
+        """Process a map task from the manager."""
         task_id = task_info["task_id"]
         input_files = task_info["input_paths"]
         executable = task_info["executable"]
@@ -106,13 +85,11 @@ class Worker:
             self._sort_partitions(file_handles)
             shutil.copytree(temp_dir, output_dir, dirs_exist_ok=True)
 
-
     def _create_partition_files(
         self, task_id, input_files, executable, num_partitions, temp_dir
     ):
         """Create partitioned intermediate files for map output."""
         file_handles = [None] * num_partitions
-
         for input_path in input_files:
             with open(input_path, encoding="utf-8") as infile:
                 with subprocess.Popen(
@@ -128,7 +105,9 @@ class Worker:
                         partition_id = self.partition(key, num_partitions)
 
                         if file_handles[partition_id] is None:
-                            filename = f"maptask{task_id:05d}-part{partition_id:05d}"
+                            filename = (
+                                f"maptask{task_id:05d}-part{partition_id:05d}"
+                            )
                             filepath = os.path.join(temp_dir, filename)
                             # pylint: disable=consider-using-with
                             file_handles[partition_id] = open(
@@ -138,7 +117,6 @@ class Worker:
                         file_handles[partition_id].write(line)
 
         return file_handles
-
 
     def _sort_partitions(self, file_handles):
         """Sort each intermediate partition file using Unix sort."""
@@ -153,15 +131,12 @@ class Worker:
                 ) as proc:
                     proc.communicate()
                     if proc.returncode != 0:
-                        raise subprocess.CalledProcessError(proc.returncode, proc.args)
-
+                        raise subprocess.CalledProcessError(
+                            proc.returncode, proc.args
+                        )
 
     def handle_reduce_task(self, dictionary):
-        """Process a reduce task from the manager.
-        
-        Args:
-            dictionary: Dictionary containing reduce task parameters
-        """
+        """Process a reduce task from the manager."""
         task_id = dictionary['task_id']
         prefix = f"mapreduce-local-task{task_id:05d}-"
 
@@ -200,11 +175,7 @@ class Worker:
                             dirs_exist_ok=True)
 
     def notify_finished(self, task_id):
-        """Send a completion message to the manager for a finished task.
-        
-        Args:
-            task_id: ID of the completed task
-        """
+        """Send a completion message to the manager for a finished task."""
         message = json.dumps({
             "message_type": "finished",
             "task_id": task_id,
@@ -222,34 +193,9 @@ class Worker:
             server_sock.settimeout(1)
 
             while self.status["alive"]:
-                try:
-                    clientsocket, address = server_sock.accept()
-                except socket.timeout:
-                    continue
-                print("Connection from", address[0])
-
-                # Set socket timeout
-                clientsocket.settimeout(1)
-                with clientsocket:
-                    message_chunks = []
-                    while True:
-                        try:
-                            data = clientsocket.recv(4096)
-                        except socket.timeout:
-                            continue
-                        if not data:
-                            break
-                        message_chunks.append(data)
-
-                try:
-                    message_bytes = b''.join(message_chunks)
-                    message_string = message_bytes.decode("utf-8")
-                    dictionary = json.loads(message_string)
-                except json.JSONDecodeError:
-                    continue
-
-                # Dispatch message to appropriate handler
-                self._handle_message(dictionary)
+                message_dict, _ = receive_json_message(server_sock)
+                if message_dict:
+                    self._handle_message(message_dict)
 
     def start_heartbeats(self):
         """Send periodic heartbeats to the manager."""
