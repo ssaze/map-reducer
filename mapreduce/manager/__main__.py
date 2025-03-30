@@ -48,6 +48,11 @@ class Manager:
             'new_job_alert_condition': threading.Condition()
         }
 
+        self.job_execs = {
+            'mapper_executable': None,
+            'reducer_executable': None
+        }
+
         self.job_queue = deque()
         self.next_job_id = 0
 
@@ -238,11 +243,12 @@ def message_handler(self, message_dict):
             job_id,
             message_dict["input_directory"],
             message_dict["output_directory"],
-            message_dict["mapper_executable"],
-            message_dict["reducer_executable"],
             message_dict["num_mappers"],
             message_dict["num_reducers"]
         )
+        self.job_execs["mapper_executable"] = message_dict["mapper_executable"]
+        self.job_execs["reducer_executable"] \
+            = message_dict["reducer_executable"]
         self.job_queue.append(job)
         with self.threading_data["new_job_alert_condition"]:
             self.threading_data["new_job_alert_condition"].notify_all()
@@ -296,7 +302,7 @@ def start_mapping(self, string_partitions):
             "message_type": "new_map_task",
             "task_id": task_id,
             "input_paths": input_paths,
-            "executable": self.config["job"].mapper_executable,
+            "executable": self.job_execs["mapper_executable"],
             "output_directory": self.config["job"].jobspecifictmpdir,
             "num_partitions": self.config["job"].num_reducers,
         }
@@ -354,7 +360,7 @@ def start_reducing(self):
         task_message = {
             "message_type": "new_reduce_task",
             "task_id": task_id,
-            "executable": self.config["job"].reducer_executable,
+            "executable": self.job_execs["reducer_executable"],
             "input_paths": partition,
             "output_directory": self.config["job"].output_dir,
         }
